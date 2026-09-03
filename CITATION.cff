@@ -13,6 +13,10 @@ authors:
     email: mar.rocacugat@maastrichtuniversity.nl
     affiliation: 'Phar-Tox, Maastricht University'
     orcid: 'https://orcid.org/0000-0001-8796-8396'
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22284927
+    description: Zenodo backup
 repository-code: 'https://github.com/OWNER/scopus-affiliation-analyzer'
 abstract: >-
   A Streamlit dashboard that queries the Elsevier Scopus API
