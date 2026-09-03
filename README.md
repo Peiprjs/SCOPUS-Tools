@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![FAIR](https://img.shields.io/badge/FAIR-compliant-green.svg)](https://www.go-fair.org/fair-principles/)
+[![DOI](https://zenodo.org/badge/1356203841.svg)](https://doi.org/10.5281/zenodo.22284926)
 
 A formal academic Streamlit dashboard for querying Scopus metadata, retrieving full text via the Elsevier Article Retrieval API (with automatic Scopus abstract fallback on paywalls or missing access), classifying author affiliations (Academia vs. Industry), and analyzing keyword prevalence across institutional structures and time.
 
