@@ -1,6 +1,5 @@
-# This CITATION.cff file was generated for FAIR compliance.
-# Update the fields below before publishing.
-# See https://citation-file-format.github.io/ for the specification.
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
 
 cff-version: 1.2.0
 title: SCOPUS Affiliation Analyzer
@@ -8,10 +7,20 @@ message: >-
   If you use this software in your research, please cite it
   using the metadata from this file.
 type: software
-version: 0.3.0
-date-released: "2026-09-03"
-license: MIT
-repository-code: "https://github.com/OWNER/scopus-affiliation-analyzer"
+authors:
+  - given-names: Emma
+    family-names: Roca Cugat
+    email: mar.rocacugat@maastrichtuniversity.nl
+    affiliation: 'Phar-Tox, Maastricht University'
+    orcid: 'https://orcid.org/0000-0001-8796-8396'
+repository-code: 'https://github.com/OWNER/scopus-affiliation-analyzer'
+abstract: >-
+  A Streamlit dashboard that queries the Elsevier Scopus API
+  for publication metadata, classifies author affiliations
+  into Academia, Industry, or Mixed categories using
+  keyword-based heuristics, and visualises the distribution
+  and trends over publication years using interactive Plotly
+  charts.
 keywords:
   - scopus
   - bibliometrics
@@ -19,15 +28,6 @@ keywords:
   - academia vs industry
   - scientometrics
   - streamlit
-authors:
-  - name: "SCOPUS Affiliation Analyzer Contributors"
-    # Replace with individual author details:
-    given-names: Emma
-    family-names: Roca Cugat
-    orcid: "https://orcid.org/0000-0001-8796-8396"
-abstract: >-
-  A Streamlit dashboard that queries the Elsevier Scopus API
-  for publication metadata, classifies author affiliations into
-  Academia, Industry, or Mixed categories using keyword-based
-  heuristics, and visualises the distribution and trends over
-  publication years using interactive Plotly charts.
+license: MIT
+version: 0.3.0
+date-released: '2026-09-03'
