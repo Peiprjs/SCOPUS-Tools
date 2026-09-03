@@ -37,23 +37,50 @@ A formal academic Streamlit dashboard for querying Scopus metadata, retrieving f
 - **Strict Academic Aesthetic**: Completely devoid of emojis across all UI elements, labels, charts, and metrics.
 
 ---
-
 ## Architecture & Data Pipeline
 
-```
-[User Query] -> [Scopus Search API] -> [Metadata: DOI, Abstract, Affiliations]
-                                              |
-                                     [Affiliation Classifier]
-                                              |
-                              [Elsevier Article Retrieval API]
-                               /                             \
-                (HTTP 200: Full Text)           (HTTP 401/403/404: Abstract Fallback)
-                               \                             /
-                                [Keyword Extraction Engine]
-                                              |
-                             [Formal Academic Streamlit UI]
-```
+```mermaid
+graph TD
+    subgraph Frontend ["Streamlit UI (Multi-Page)"]
+        UI_Input[User Configurations: Search, Filters, Full-Text Toggle]
+        UI_Dash[Interactive Dashboards: Plotly Visualizations]
+        UI_Export[Export Engine: RIS & LaTeX ZIP]
+    end
 
+    subgraph Data_Layer ["API Extraction Layer"]
+        Scopus[Scopus Search API]
+        Cond_FT{Full-Text Toggle}
+        Ext_Meta[Extract Metadata, DOIs, & Abstracts]
+        Elsevier[Elsevier Article Retrieval API]
+        Fallback[Strict Fallback to Abstract]
+    end
+
+    subgraph Processing_Layer ["Categorization & Logic"]
+        Parse_Affil[Affiliation Heuristics: Academia vs. Industry]
+        Parse_Geo[Geo-Classification: EU/EEC vs. Non-EU/EEC]
+        Match_Key[Keyword Frequency Matcher]
+    end
+
+    %% Flow of Execution
+    UI_Input --> Scopus
+    Scopus --> Cond_FT
+    Cond_FT -- "False" --> Ext_Meta
+    Cond_FT -- "True" --> Elsevier
+    Elsevier -- "401/403/404 Error" --> Fallback
+    Fallback --> Ext_Meta
+    Elsevier -- "200 OK (Full Text)" --> Match_Key
+    Ext_Meta --> Match_Key
+    
+    Scopus --> Parse_Affil
+    Scopus --> Parse_Geo
+
+    %% Output Routing
+    Parse_Affil --> UI_Dash
+    Parse_Geo --> UI_Dash
+    Match_Key --> UI_Dash
+    
+    UI_Dash --> UI_Export
+```
 ---
 
 ## Installation
