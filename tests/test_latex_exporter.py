@@ -68,6 +68,9 @@ class TestLatexExporter(unittest.TestCase):
         self.assertIn("fig_institutional_trends", figs)
         self.assertIn("fig_geopolitical_correlation", figs)
         self.assertIn("fig_keyword_prevalence", figs)
+        self.assertIn("fig_citation_network", figs)
+        self.assertIn("fig_top_authors", figs)
+        self.assertIn("fig_top_institutions", figs)
 
         # Check template
         self.assertEqual(figs["fig_affiliation_distribution"].layout.template.layout.margin.l or 50, 50)
@@ -86,6 +89,9 @@ class TestLatexExporter(unittest.TestCase):
             "fig_institutional_trends": "fig_institutional_trends.png",
             "fig_geopolitical_correlation": "fig_geopolitical_correlation.png",
             "fig_keyword_prevalence": "fig_keyword_prevalence.png",
+            "fig_citation_network": "fig_citation_network.png",
+            "fig_top_authors": "fig_top_authors.png",
+            "fig_top_institutions": "fig_top_institutions.png",
         }
         tex = generate_latex_document(self.df, self.kws, metadata, image_filenames)
         self.assertIn(r"\documentclass[11pt,a4paper]{article}", tex)
@@ -94,6 +100,9 @@ class TestLatexExporter(unittest.TestCase):
         self.assertIn(r"Carbon Nanotubes \& Safety", tex)
         self.assertIn(r"\includegraphics", tex)
         self.assertIn("fig_affiliation_distribution.png", tex)
+        self.assertIn("fig_citation_network.png", tex)
+        self.assertIn("fig_top_authors.png", tex)
+        self.assertIn("fig_top_institutions.png", tex)
 
     def test_create_latex_bundle(self):
         metadata = {
@@ -116,6 +125,9 @@ class TestLatexExporter(unittest.TestCase):
             self.assertIn("fig_institutional_trends.png", names)
             self.assertIn("fig_geopolitical_correlation.png", names)
             self.assertIn("fig_keyword_prevalence.png", names)
+            self.assertIn("fig_citation_network.png", names)
+            self.assertIn("fig_top_authors.png", names)
+            self.assertIn("fig_top_institutions.png", names)
 
 
 if __name__ == "__main__":

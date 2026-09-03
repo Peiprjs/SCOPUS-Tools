@@ -61,6 +61,7 @@ def escape_latex(text: Any) -> str:
 def build_monochrome_figures(
     analyzed_df: pd.DataFrame,
     parsed_kws: list[str] | None = None,
+    citation_graph: Any = None,
 ) -> dict[str, go.Figure]:
     """Generate publication-ready black-and-white Plotly figures.
 
@@ -248,6 +249,30 @@ def build_monochrome_figures(
             ),
         )
         figures["fig_keyword_prevalence"] = fig_kw_mono
+
+    # 5. Citation Network Map (Monochrome)
+    from network_analyzer import (
+        build_citation_graph,
+        build_descriptive_frequency_figures,
+        build_network_plotly_figure,
+    )
+
+    if citation_graph is not None:
+        figures["fig_citation_network"] = build_network_plotly_figure(
+            citation_graph, analyzed_df, monochrome=True
+        )
+    else:
+        G_fallback, _ = build_citation_graph(analyzed_df, [])
+        figures["fig_citation_network"] = build_network_plotly_figure(
+            G_fallback, analyzed_df, monochrome=True
+        )
+
+    # 6. Descriptive Frequency Visualizations (Top Authors & Institutions)
+    fig_authors, fig_insts = build_descriptive_frequency_figures(
+        analyzed_df, top_n=20, monochrome=True
+    )
+    figures["fig_top_authors"] = fig_authors
+    figures["fig_top_institutions"] = fig_insts
 
     return figures
 
@@ -437,11 +462,92 @@ def generate_latex_document(
             ]
         )
 
+    # Citation Network & Centrality Hub Analysis
+    if "fig_citation_network" in image_filenames:
+        tex_parts.extend(
+            [
+                r"\newpage",
+                r"\section{Internal Citation Network \& Central Hub Analysis}",
+                r"Internal cross-citation dynamics restricted exclusively to citations connecting papers within the study cohort.",
+                r"",
+                r"\begin{figure}[H]",
+                r"\centering",
+                rf"\includegraphics[width=0.85\linewidth]{{{image_filenames['fig_citation_network']}}}",
+                r"\caption{Internal citation network graph. Node sizes scale with internal in-degree centrality; node symbols distinguish institutional sectors.}",
+                r"\end{figure}",
+                r"",
+            ]
+        )
+
+        if "in_degree" in analyzed_df.columns and not analyzed_df.empty:
+            hub_papers = analyzed_df.sort_values(by=["in_degree", "betweenness_centrality"], ascending=False).head(10)
+            hub_rows: list[str] = []
+            for rank, (_, hrow) in enumerate(hub_papers.iterrows(), start=1):
+                raw_title = str(hrow.get("title", "Untitled"))
+                short_title = (raw_title[:65] + "...") if len(raw_title) > 65 else raw_title
+                esc_title = escape_latex(short_title)
+                sec = escape_latex(str(hrow.get("category", "Unknown")))
+                in_c = int(hrow.get("in_degree", 0))
+                betw = float(hrow.get("betweenness_centrality", 0.0))
+                hub_rows.append(f"{rank} & {esc_title} & {sec} & {in_c} & {betw:.4f} \\\\")
+
+            table_hub_str = "\n".join(hub_rows)
+            tex_parts.extend(
+                [
+                    r"\begin{table}[H]",
+                    r"\centering",
+                    r"\small",
+                    r"\begin{tabularx}{\textwidth}{rXlrr}",
+                    r"\toprule",
+                    r"\textbf{\#} & \textbf{Publication Title} & \textbf{Sector} & \textbf{In-Citations} & \textbf{Betweenness} \\",
+                    r"\midrule",
+                    table_hub_str,
+                    r"\bottomrule",
+                    r"\end{tabularx}",
+                    r"\caption{Top hub publications ranked by internal citation in-degree within the analyzed cohort.}",
+                    r"\end{table}",
+                    r"",
+                ]
+            )
+
+    # Descriptive Productivity Metrics
+    if "fig_top_authors" in image_filenames or "fig_top_institutions" in image_filenames:
+        tex_parts.extend(
+            [
+                r"\section{Descriptive Productivity Metrics}",
+                r"Institutional and author output frequencies evaluated across the retrieved publication cohort.",
+                r"",
+            ]
+        )
+        if "fig_top_authors" in image_filenames:
+            tex_parts.extend(
+                [
+                    r"\begin{figure}[H]",
+                    r"\centering",
+                    rf"\includegraphics[width=0.85\linewidth]{{{image_filenames['fig_top_authors']}}}",
+                    r"\caption{Top 20 most frequent authors contributing to the publication corpus.}",
+                    r"\end{figure}",
+                    r"",
+                ]
+            )
+        if "fig_top_institutions" in image_filenames:
+            tex_parts.extend(
+                [
+                    r"\begin{figure}[H]",
+                    r"\centering",
+                    rf"\includegraphics[width=0.85\linewidth]{{{image_filenames['fig_top_institutions']}}}",
+                    r"\caption{Top 20 most frequent research institutions associated with the publication corpus.}",
+                    r"\end{figure}",
+                    r"",
+                ]
+            )
+
     tex_parts.extend(
         [
             r"\section{Methodological Framework \& FAIR Compliance}",
             r"\begin{itemize}",
             r"\item \textbf{Defensive Data Ingestion:} Scopus metadata fields (\texttt{affilname}, \texttt{affiliation-country}) are split and aligned with boundary verification, mitigating index exceptions.",
+            r"\item \textbf{Internal Citation Resolution:} Reference lists are queried via the Scopus Abstract Retrieval API and filtered against the cohort lookup index to isolate cross-citations exclusively within the search results.",
             r"\item \textbf{Geopolitical Criteria:} Evaluated against the 27 EU member states plus 3 EEC/EEA EFTA members (Iceland, Liechtenstein, Norway).",
             r"\item \textbf{Monochrome Graphics:} Figures are generated using black outlines, grayscale fills, and pattern hatching (\texttt{pattern\_shape}) to guarantee legibility under standard monochrome printing.",
             r"\item \textbf{Provenance Stamp:} Exported report bundle includes complete metadata parameters supporting reproducibility.",
@@ -462,6 +568,7 @@ def create_latex_bundle(
     analyzed_df: pd.DataFrame,
     parsed_kws: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    citation_graph: Any = None,
 ) -> bytes:
     """Render figures, build report.tex, and compile a downloadable ZIP archive.
 
@@ -473,6 +580,8 @@ def create_latex_bundle(
         Target keyword list.
     metadata:
         Query and filter metadata.
+    citation_graph:
+        Optional precomputed NetworkX citation graph.
 
     Returns
     -------
@@ -481,7 +590,11 @@ def create_latex_bundle(
     if metadata is None:
         metadata = {}
 
-    figures = build_monochrome_figures(analyzed_df, parsed_kws)
+    figures = build_monochrome_figures(
+        analyzed_df=analyzed_df,
+        parsed_kws=parsed_kws,
+        citation_graph=citation_graph,
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         image_filenames: dict[str, str] = {}
@@ -509,9 +622,8 @@ def create_latex_bundle(
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             zip_file.write(tex_path, arcname="report.tex")
-            for key, fname in image_filenames.items():
-                fpath = f"{tmpdir}/{fname}"
-                zip_file.write(fpath, arcname=fname)
+            for fname in image_filenames.values():
+                zip_file.write(f"{tmpdir}/{fname}", arcname=fname)
 
         zip_buffer.seek(0)
         return zip_buffer.getvalue()

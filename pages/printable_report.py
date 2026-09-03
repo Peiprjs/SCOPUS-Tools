@@ -132,6 +132,13 @@ if analyzed_df is None or analyzed_df.empty:
         sample_years = [2021, 2022, 2023, 2024, 2025] * 8
         sample_cats = ["Academia"] * 18 + ["Mixed"] * 14 + ["Industry"] * 6 + ["Unknown"] * 2
         sample_geo = ["EU/EEC"] * 18 + ["Mixed Geo"] * 16 + ["Non-EU/EEC"] * 6
+        sample_authors = [
+            ["Dupont, M.", "Smith, J."],
+            ["Müller, H.", "Tanaka, K."],
+            ["Rossi, E.", "Dupont, M."],
+            ["Smith, J."],
+            ["Alvarez, C.", "Schmidt, U."],
+        ] * 8
         demo_df = pd.DataFrame(
             {
                 "eid": [f"2-s2.0-{i:06d}" for i in range(40)],
@@ -141,6 +148,7 @@ if analyzed_df is None or analyzed_df.empty:
                 "geo_category": sample_geo[:40],
                 "countries": [["Germany", "Spain"] if i % 2 == 0 else ["Italy", "United States"] for i in range(40)],
                 "institutions": [["Max Planck Institute"] if i % 2 == 0 else ["MIT", "CNRS"] for i in range(40)],
+                "authors": sample_authors[:40],
                 "text_source": ["Full Text"] * 18 + ["Abstract"] * 22,
                 "total_keyword_hits": [2, 0, 4, 1, 0] * 8,
                 "has_any_keyword": [True, False, True, True, False] * 8,
@@ -153,10 +161,14 @@ if analyzed_df is None or analyzed_df.empty:
                 "matched_keywords": [["safety"], [], ["safety", "sustainability"], ["sustainability"], []] * 8,
             }
         )
+        from network_analyzer import build_citation_graph
+        demo_edges = [(f"2-s2.0-{i:06d}", f"2-s2.0-{(i-1)%40:06d}") for i in range(1, 25)]
+        demo_G, demo_df = build_citation_graph(demo_df, demo_edges)
         analyzed_df = demo_df
         parsed_kws = ["safety", "sustainability", "nano"]
         st.session_state["analyzed_df"] = demo_df
         st.session_state["parsed_kws"] = parsed_kws
+        st.session_state["citation_graph"] = demo_G
         st.rerun()
     else:
         st.stop()
@@ -199,6 +211,7 @@ if generate_bundle_btn:
             analyzed_df=analyzed_df,
             parsed_kws=parsed_kws,
             metadata=metadata,
+            citation_graph=st.session_state.get("citation_graph"),
         )
         st.session_state["latex_zip_bytes"] = zip_bytes
 
@@ -217,11 +230,14 @@ if "latex_zip_bytes" in st.session_state and st.session_state["latex_zip_bytes"]
         st.markdown(
             """
             **Archive Contents:**
-            * `report.tex`: Standalone LaTeX document with geometry, booktabs, graphicx, and figure floats.
+            * `report.tex`: Standalone LaTeX document with geometry, booktabs, graphicx, hub papers table, and figure floats.
             * `fig_affiliation_distribution.png`: Sectoral distribution (Academia vs. Industry).
             * `fig_institutional_trends.png`: Temporal share over publication years.
             * `fig_geopolitical_correlation.png`: Geopolitical scope cross-tabulated with institutional sector.
             * `fig_keyword_prevalence.png`: Keyword occurrence frequency across sectors (if keywords specified).
+            * `fig_citation_network.png`: Internal cross-citation network map.
+            * `fig_top_authors.png`: Top 20 most frequent authors.
+            * `fig_top_institutions.png`: Top 20 most frequent research institutions.
 
             **Compilation Instructions:**
             ```bash

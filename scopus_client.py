@@ -154,6 +154,15 @@ def _parse_institutions_and_countries(
     return unique_insts, unique_countries, details
 
 
+def _parse_authors(author_names: Any, creator: Any = None) -> list[str]:
+    """Extract a list of author names from Scopus metadata."""
+    if author_names and isinstance(author_names, str):
+        return [a.strip() for a in author_names.split(";") if a.strip()]
+    if creator and isinstance(creator, str) and creator.strip():
+        return [creator.strip()]
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -169,6 +178,7 @@ _RESULT_COLUMNS = [
     "institutions",
     "countries",
     "affiliations_detail",
+    "authors",
 ]
 
 
@@ -185,8 +195,8 @@ def search_scopus(query: str) -> pd.DataFrame:
     -------
     DataFrame with columns ``eid``, ``title``, ``year`` (int | None),
     ``affiliations`` (list[str]), ``doi`` (str | None), ``abstract`` (str | None),
-    ``institutions`` (list[str]), ``countries`` (list[str]), and
-    ``affiliations_detail`` (list[dict[str, str]]).
+    ``institutions`` (list[str]), ``countries`` (list[str]),
+    ``affiliations_detail`` (list[dict[str, str]]), and ``authors`` (list[str]).
 
     Raises
     ------
@@ -216,6 +226,10 @@ def search_scopus(query: str) -> pd.DataFrame:
         raw_affil = getattr(doc, "affilname", None)
         raw_country = getattr(doc, "affiliation_country", None)
         insts, countries, details = _parse_institutions_and_countries(raw_affil, raw_country)
+        authors = _parse_authors(
+            getattr(doc, "author_names", None),
+            getattr(doc, "creator", None),
+        )
 
         rows.append(
             {
@@ -228,6 +242,7 @@ def search_scopus(query: str) -> pd.DataFrame:
                 "institutions": insts,
                 "countries": countries,
                 "affiliations_detail": details,
+                "authors": authors,
             }
         )
 

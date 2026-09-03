@@ -23,6 +23,12 @@ from dotenv import load_dotenv
 from classifier import classify_geography, classify_paper
 from fulltext_client import enrich_dataset_with_text
 from keyword_matcher import add_keyword_features, parse_keywords
+from network_analyzer import (
+    build_citation_graph,
+    build_descriptive_frequency_figures,
+    build_network_plotly_figure,
+    extract_citation_edges,
+)
 from scopus_client import init_pybliometrics, search_scopus
 
 load_dotenv()
@@ -169,11 +175,40 @@ if execute_clicked:
 
     st.session_state["enriched_df"] = enriched
 
+    # Citation Reference Extraction for Internal Network Mapping
+    progress_bar_cit = st.progress(0.0)
+    status_box_cit = st.empty()
+
+    def update_cit_progress(ratio: float, msg: str) -> None:
+        progress_bar_cit.progress(min(max(ratio, 0.0), 1.0))
+        status_box_cit.text(msg)
+
+    with st.spinner("Harvesting references and resolving internal cross-citations..."):
+        edges = extract_citation_edges(
+            df=enriched,
+            api_key=active_api_key,
+            inst_token=inst_token_input.strip() or None,
+            progress_callback=update_cit_progress,
+        )
+
+    progress_bar_cit.empty()
+    status_box_cit.empty()
+
+    st.session_state["citation_edges"] = edges
+
 if "enriched_df" not in st.session_state:
     st.info("Configure parameters in the sidebar and select 'Execute Analysis' to begin.")
     st.stop()
 
 base_df: pd.DataFrame = st.session_state["enriched_df"]
+
+if "citation_edges" not in st.session_state:
+    with st.spinner("Extracting reference lists for internal network analysis..."):
+        st.session_state["citation_edges"] = extract_citation_edges(
+            df=base_df,
+            api_key=active_api_key,
+            inst_token=inst_token_input.strip() or None,
+        )
 
 if base_df.empty:
     st.warning("The dataset contains zero records.")
@@ -270,6 +305,11 @@ filtered_df["geo_category"] = filtered_df["countries"].apply(classify_geography)
 parsed_kws = parse_keywords(raw_keywords_input)
 analyzed_df = add_keyword_features(filtered_df, parsed_kws)
 
+# Graph Construction & Centrality Metrics Calculation
+citation_edges = st.session_state.get("citation_edges", [])
+citation_graph, analyzed_df = build_citation_graph(analyzed_df, citation_edges)
+st.session_state["citation_graph"] = citation_graph
+
 # Save to shared session_state for Printable Report page
 st.session_state["analyzed_df"] = analyzed_df
 st.session_state["parsed_kws"] = parsed_kws
@@ -339,13 +379,14 @@ st.markdown("---")
 
 # --- Tabbed Analytical Views ------------------------------------------------
 
-tab_affil, tab_geo, tab_kw, tab_data, tab_method = st.tabs(
+tab_affil, tab_geo, tab_kw, tab_net, tab_desc, tab_data = st.tabs(
     [
         "Affiliation Trends",
         "Geo Trends",
         "Keyword Frequency",
+        "Citation Network",
+        "Descriptive Metrics",
         "Structured Dataset & Export",
-        "Methodology & Documentation",
     ]
 )
 
@@ -622,7 +663,88 @@ with tab_kw:
             )
             st.plotly_chart(fig_trend, use_container_width=True)
 
-# --- Tab 4: Dataset & Export ------------------------------------------------
+# --- Tab 4: Citation Network ------------------------------------------------
+
+with tab_net:
+    st.subheader("Internal Citation Network Analysis")
+    st.caption(
+        "Maps directed cross-citations restricted exclusively to publications within the active search pool. "
+        "Connections indicate that Paper A explicitly references Paper B."
+    )
+
+    n_nodes = len(citation_graph.nodes())
+    n_edges = len(citation_graph.edges())
+    max_in = int(analyzed_df["in_degree"].max()) if "in_degree" in analyzed_df.columns and not analyzed_df.empty else 0
+    density = (n_edges / (n_nodes * (n_nodes - 1))) if n_nodes > 1 else 0.0
+
+    cn1, cn2, cn3, cn4 = st.columns(4)
+    with cn1:
+        st.metric(label="Total Cohort Nodes", value=n_nodes)
+    with cn2:
+        st.metric(label="Internal Cross-Citations", value=n_edges)
+    with cn3:
+        st.metric(label="Max In-Citations Received", value=max_in)
+    with cn4:
+        st.metric(label="Network Density", value=f"{density:.4f}")
+
+    st.markdown("---")
+
+    scale_metric = st.radio(
+        "Scale Node Size By Centrality Metric:",
+        options=["In-Degree (Citations Received)", "Betweenness Centrality (Bridging Hubs)"],
+        horizontal=True,
+        key="net_node_scale",
+    )
+    metric_key = "in_degree" if "In-Degree" in scale_metric else "betweenness_centrality"
+
+    fig_net = build_network_plotly_figure(
+        G=citation_graph,
+        df=analyzed_df,
+        metric=metric_key,
+        monochrome=False,
+    )
+    st.plotly_chart(fig_net, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Top 10 Hub Papers (Cohort Cross-Citations)")
+    st.caption("Ranked by internal in-degree citations received from other papers in this dataset.")
+
+    if "in_degree" in analyzed_df.columns and not analyzed_df.empty:
+        hub_df = analyzed_df.sort_values(
+            by=["in_degree", "betweenness_centrality"], ascending=False
+        ).head(10)[
+            ["eid", "title", "year", "category", "in_degree", "out_degree", "betweenness_centrality", "pagerank", "doi"]
+        ].copy()
+        hub_df.columns = [
+            "EID", "Title", "Year", "Sector", "In-Citations", "References", "Betweenness", "PageRank", "DOI"
+        ]
+        st.dataframe(hub_df, use_container_width=True, hide_index=True)
+
+
+# --- Tab 5: Descriptive Metrics ---------------------------------------------
+
+with tab_desc:
+    st.subheader("Descriptive Bibliometric Metrics")
+    st.caption(
+        "Frequency distributions of leading researchers and research organizations across the publication cohort."
+    )
+
+    fig_top_auth, fig_top_inst = build_descriptive_frequency_figures(
+        df=analyzed_df,
+        top_n=20,
+        monochrome=False,
+    )
+
+    c_desc1, c_desc2 = st.columns(2)
+    with c_desc1:
+        st.markdown("**Top 20 Most Frequent Authors**")
+        st.plotly_chart(fig_top_auth, use_container_width=True)
+    with c_desc2:
+        st.markdown("**Top 20 Most Frequent Institutions**")
+        st.plotly_chart(fig_top_inst, use_container_width=True)
+
+
+# --- Tab 6: Dataset & Export ------------------------------------------------
 
 with tab_data:
     st.subheader("Structured Dataset Viewer")
@@ -633,6 +755,10 @@ with tab_data:
         "year",
         "category",
         "geo_category",
+        "in_degree",
+        "out_degree",
+        "betweenness_centrality",
+        "pagerank",
         "countries",
         "institutions",
         "text_source",
@@ -686,38 +812,4 @@ with tab_data:
     st.caption(
         "The exported CSV incorporates complete provenance metadata columns "
         "facilitating reproduction and auditability."
-    )
-
-# --- Tab 5: Methodology & Documentation -------------------------------------
-
-with tab_method:
-    st.subheader("Methodology, Protocols, and Compliance")
-    st.markdown(
-        """
-### 1. Data Ingestion & Defensive Parsing Architecture
-* **Scopus Search API:** Publication metadata, cover dates, unique identifiers (`eid`), Digital Object Identifiers (`doi`), author affiliations (`affilname`), and country designations (`affiliation-country`) are extracted.
-* **Defensive Alignment:** Semicolon-delimited institutional and country tokens are parsed with boundary protection to prevent `IndexError` or `KeyError` anomalies.
-* **Toggleable Elsevier Article Retrieval API:** 
-  * When enabled: For papers with a valid DOI, full text is requested. If paywalled (HTTP 401/403), unindexed (HTTP 404), rate-limited (HTTP 429), or missing a DOI, the Scopus abstract is substituted.
-  * When disabled: Completely bypasses the Article Retrieval API, evaluating keywords against Scopus abstracts to minimize latency and manage quotas.
-
-### 2. Institutional & Geopolitical Classification
-* **Sectoral Classification (Academia vs. Industry):** Heuristic identification of academic entities (universities, colleges, polytechnics, public research institutes) and corporate bodies (*Inc.*, *Corp.*, *Ltd.*, *LLC*, *GmbH*, *S.A.*, *Plc.*, *Co.*, *AG*, *SE*, *Pharma*, *Biotech*).
-* **Geopolitical Classification (EU/EEC):**
-  * Evaluated against the 27 EU Member States plus 3 EEC/EEA EFTA members (Iceland, Liechtenstein, Norway).
-  * **EU/EEC:** All resolved author affiliations originate within EU/EEC member states.
-  * **Non-EU/EEC:** All resolved author affiliations originate outside EU/EEC boundaries.
-  * **Mixed Geo:** International cross-border consortium featuring co-authors from both EU/EEC and non-EU/EEC institutions.
-
-### 3. Text Processing & Keyword Detection
-* **Markup Normalization:** HTML/XML fragments are scrubbed via BeautifulSoup and whitespace is collapsed.
-* **Word-Boundary Matching:** Terms are evaluated using case-insensitive regular expressions anchored on word boundaries (`\\b`) to eliminate partial-token false positives.
-* **Frequency Quantification:** Evaluates both binary paper-level incidence and total recurrence counts.
-
-### 4. FAIR Principles Compliance
-* **Findable:** Formal CFF metadata (`CITATION.cff`), standard package declarations (`pyproject.toml`), and persistent identifiers (`eid`, `doi`).
-* **Accessible:** Permissive MIT licensing and standard REST protocols.
-* **Interoperable:** Standard RFC 4180 CSV exports and canonical RIS citation records via `rispy`.
-* **Reusable:** Automated unit testing suite, detailed provenance stamps, and documented heuristic thresholds.
-        """
     )

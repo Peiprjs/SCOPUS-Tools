@@ -39,6 +39,7 @@ class TestScopusClientHelpers(unittest.TestCase):
             "institutions",
             "countries",
             "affiliations_detail",
+            "authors",
         ]
         self.assertEqual(_RESULT_COLUMNS, expected)
 
