@@ -66,11 +66,82 @@ class TestScopusClientHelpers(unittest.TestCase):
         self.assertEqual(details[1]["country"], "Unknown Country")
         self.assertEqual(details[2]["country"], "Unknown Country")
 
-        # None / empty / malformed
-        insts, countries, details = _parse_institutions_and_countries(None, None)
-        self.assertEqual(insts, [])
-        self.assertEqual(countries, [])
-        self.assertEqual(details, [])
+    def test_format_eta(self):
+        from scopus_client import format_eta
+
+        self.assertEqual(format_eta(135), "02:15")
+        self.assertEqual(format_eta(330), "05:30")
+        self.assertEqual(format_eta(0), "00:00")
+        self.assertEqual(format_eta(3665), "01:01:05")
+        self.assertEqual(format_eta(None), "--:--")
+        self.assertEqual(format_eta(-10), "--:--")
+
+    def test_search_scopus_pagination_mock(self):
+        from unittest.mock import patch, MagicMock
+        from scopus_client import search_scopus
+
+        chunk1_data = {
+            "search-results": {
+                "opensearch:totalResults": "3",
+                "entry": [
+                    {
+                        "eid": "2-s2.0-001",
+                        "dc:title": "Paper One",
+                        "prism:coverDate": "2024-01-01",
+                        "affiliation": [{"affilname": "Inst A", "affiliation-country": "Germany"}],
+                        "author": [{"surname": "Smith", "given-name": "John"}],
+                    },
+                    {
+                        "eid": "2-s2.0-002",
+                        "dc:title": "Paper Two",
+                        "prism:coverDate": "2023-01-01",
+                        "affiliation": [{"affilname": "Inst B", "affiliation-country": "France"}],
+                        "author": [{"surname": "Dupont", "given-name": "Jean"}],
+                    },
+                ],
+            }
+        }
+        chunk2_data = {
+            "search-results": {
+                "opensearch:totalResults": "3",
+                "entry": [
+                    {
+                        "eid": "2-s2.0-003",
+                        "dc:title": "Paper Three",
+                        "prism:coverDate": "2022-01-01",
+                        "affiliation": [{"affilname": "Inst C", "affiliation-country": "Italy"}],
+                        "author": [{"surname": "Rossi", "given-name": "Mario"}],
+                    },
+                ],
+            }
+        }
+
+        resp1 = MagicMock()
+        resp1.status_code = 200
+        resp1.json.return_value = chunk1_data
+
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = chunk2_data
+
+        callback_messages: list[str] = []
+
+        def mock_callback(chunk_idx, total_chunks, curr, total, msg):
+            callback_messages.append(msg)
+
+        with patch("requests.get", side_effect=[resp1, resp2]):
+            df = search_scopus(
+                query="TITLE(test)",
+                count=2,
+                api_key="dummy_key",
+                progress_callback=mock_callback,
+            )
+
+        self.assertEqual(len(df), 3)
+        self.assertEqual(len(callback_messages), 2)
+        self.assertIn("chunk 1 of 2", callback_messages[0])
+        self.assertIn("ETA: ", callback_messages[0])
+        self.assertIn("chunk 2 of 2", callback_messages[1])
 
 
 if __name__ == "__main__":

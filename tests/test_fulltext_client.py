@@ -117,13 +117,26 @@ class TestFulltextClient(unittest.TestCase):
                 "abstract": ["Abstract for paper 1", "Abstract for paper 2"],
             }
         )
-        res = enrich_dataset_with_text(df, api_key="test_key", max_fulltext=10)
+        messages = []
+        def mock_cb(ratio, msg):
+            messages.append(msg)
+
+        res = enrich_dataset_with_text(
+            df,
+            api_key="test_key",
+            max_fulltext=10,
+            progress_callback=mock_cb,
+            fetch_full_text=True,
+        )
 
         self.assertEqual(len(res), 2)
         self.assertEqual(res.loc[0, "text_source"], "Abstract")
         self.assertEqual(res.loc[0, "text"], "Abstract for paper 1")
         self.assertEqual(res.loc[1, "text_source"], "Abstract")
         self.assertEqual(res.loc[1, "text"], "Abstract for paper 2")
+        self.assertTrue(len(messages) >= 2)
+        self.assertIn("fallbacks", messages[0])
+        self.assertIn("ETA: ", messages[0])
 
     @patch("requests.get")
     def test_enrich_dataset_with_text_bypassed(self, mock_get):

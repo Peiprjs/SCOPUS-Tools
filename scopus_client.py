@@ -1,20 +1,51 @@
 """
-scopus_client.py — Scopus API data-fetching layer.
+scopus_client.py — Scopus API data-fetching and pagination layer.
 
-Wraps pybliometrics to execute ScopusSearch queries and return clean
-DataFrames with extracted year and affiliation lists.
+Executes Scopus searches with chunk-level pagination, real-time progress callbacks,
+and dynamic Estimated Time of Arrival (ETA) calculation.
+Zero emojis, formal academic design.
 """
 
 from __future__ import annotations
 
 import configparser
 import logging
+import math
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Timing & ETA Formatting Helper
+# ---------------------------------------------------------------------------
+
+def format_eta(seconds: float | None) -> str:
+    """Format duration in seconds to MM:SS string (or HH:MM:SS if >= 1 hour).
+
+    Parameters
+    ----------
+    seconds:
+        Projected remaining duration in seconds.
+
+    Returns
+    -------
+    Formatted time string (e.g. '02:15', '05:30', '--:--').
+    """
+    if seconds is None or seconds < 0:
+        return "--:--"
+    total_sec = int(round(seconds))
+    mins, secs = divmod(total_sec, 60)
+    hours, mins = divmod(mins, 60)
+    if hours > 0:
+        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    return f"{mins:02d}:{secs:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -69,81 +100,45 @@ def init_pybliometrics(api_key: str, inst_token: str | None = None) -> None:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as fh:
             config.write(fh)
 
-    # Initialize pybliometrics in-memory config
-    try:
-        import pybliometrics
-        tokens = [clean_token] if clean_token else None
-        pybliometrics.init(keys=[clean_key], inst_tokens=tokens)
-    except Exception as exc:
-        logger.debug("pybliometrics in-memory init notice: %s", exc)
-
-    logger.info("pybliometrics config initialized for %s", _CONFIG_PATH)
-
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Internal parsing helpers
 # ---------------------------------------------------------------------------
 
 def _parse_year(cover_date: Any) -> int | None:
-    """Extract a 4-digit year from a coverDate string like '2023-06-15'."""
+    """Extract a 4-digit publication year from a Scopus coverDate string."""
     if not cover_date or not isinstance(cover_date, str):
         return None
-    try:
-        return int(cover_date[:4])
-    except (ValueError, IndexError):
-        return None
+    token = cover_date.strip()[:4]
+    return int(token) if token.isdigit() and len(token) == 4 else None
 
 
-def _parse_affiliations(affilname: Any) -> list[str]:
-    """Split a semicolon-delimited affiliation string into a clean list."""
-    if not affilname or not isinstance(affilname, str):
+def _parse_affiliations(raw: Any) -> list[str]:
+    """Split a semicolon-delimited Scopus affilname string into unique names."""
+    if not raw or not isinstance(raw, str):
         return []
-    return [a.strip() for a in affilname.split(";") if a.strip()]
+    names = [part.strip() for part in raw.split(";") if part.strip()]
+    return list(dict.fromkeys(names))
 
 
 def _parse_institutions_and_countries(
-    affilname: Any,
-    country_str: Any,
+    affilname: Any, country_str: Any
 ) -> tuple[list[str], list[str], list[dict[str, str]]]:
-    """Defensively parse and pair institutions and countries from Scopus metadata.
+    """Parse and align semicolon-delimited institutions and countries."""
+    raw_insts = (
+        [p.strip() for p in affilname.split(";") if p.strip()]
+        if isinstance(affilname, str)
+        else []
+    )
+    raw_countries = (
+        [p.strip() for p in country_str.split(";") if p.strip()]
+        if isinstance(country_str, str)
+        else []
+    )
 
-    Guarantees zero KeyError or IndexError exceptions even when delimiter
-    counts differ or fields are null/malformed.
+    unique_insts = list(dict.fromkeys(raw_insts))
+    unique_countries = list(dict.fromkeys(raw_countries))
 
-    Parameters
-    ----------
-    affilname:
-        Semicolon-delimited institutional names or None.
-    country_str:
-        Semicolon-delimited country names or None.
-
-    Returns
-    -------
-    tuple of:
-        - institutions: deduplicated list of institution names
-        - countries: deduplicated list of country names
-        - affiliations_detail: list of paired dicts {"institution": ..., "country": ...}
-    """
-    raw_insts: list[str] = []
-    if affilname and isinstance(affilname, str):
-        raw_insts = [i.strip() for i in affilname.split(";") if i.strip()]
-
-    raw_countries: list[str] = []
-    if country_str and isinstance(country_str, str):
-        raw_countries = [c.strip() for c in country_str.split(";") if c.strip()]
-
-    # Deduplicated lists preserving order
-    unique_insts: list[str] = []
-    for inst in raw_insts:
-        if inst not in unique_insts:
-            unique_insts.append(inst)
-
-    unique_countries: list[str] = []
-    for cntry in raw_countries:
-        if cntry not in unique_countries:
-            unique_countries.append(cntry)
-
-    # Construct paired detail records defensively
     details: list[dict[str, str]] = []
     max_len = max(len(raw_insts), len(raw_countries))
     for idx in range(max_len):
@@ -163,11 +158,80 @@ def _parse_authors(author_names: Any, creator: Any = None) -> list[str]:
     return []
 
 
+def _parse_entry_to_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a raw Scopus JSON search entry into a structured row dictionary."""
+    affil_field = entry.get("affiliation")
+    insts: list[str] = []
+    countries: list[str] = []
+    details: list[dict[str, str]] = []
+
+    if isinstance(affil_field, list):
+        for af in affil_field:
+            if isinstance(af, dict):
+                inst = af.get("affilname", "Unknown Institution")
+                cntry = af.get("affiliation-country", "Unknown Country")
+                if inst:
+                    insts.append(inst)
+                if cntry:
+                    countries.append(cntry)
+                details.append({
+                    "institution": inst or "Unknown Institution",
+                    "country": cntry or "Unknown Country",
+                })
+    elif isinstance(affil_field, dict):
+        inst = affil_field.get("affilname", "Unknown Institution")
+        cntry = affil_field.get("affiliation-country", "Unknown Country")
+        if inst:
+            insts.append(inst)
+        if cntry:
+            countries.append(cntry)
+        details.append({
+            "institution": inst or "Unknown Institution",
+            "country": cntry or "Unknown Country",
+        })
+
+    authors_list: list[str] = []
+    auth_field = entry.get("author")
+    if isinstance(auth_field, list):
+        for a in auth_field:
+            if isinstance(a, dict):
+                surname = a.get("surname")
+                given = a.get("given-name")
+                authname = a.get("authname")
+                if surname and given:
+                    authors_list.append(f"{surname}, {given}")
+                elif authname:
+                    authors_list.append(authname)
+    elif isinstance(auth_field, dict):
+        surname = auth_field.get("surname")
+        given = auth_field.get("given-name")
+        authname = auth_field.get("authname")
+        if surname and given:
+            authors_list.append(f"{surname}, {given}")
+        elif authname:
+            authors_list.append(authname)
+
+    if not authors_list and entry.get("dc:creator"):
+        authors_list = [str(entry.get("dc:creator"))]
+
+    return {
+        "eid": entry.get("eid") or entry.get("dc:identifier"),
+        "title": entry.get("dc:title"),
+        "year": _parse_year(entry.get("prism:coverDate")),
+        "affiliations": list(dict.fromkeys(insts)),
+        "doi": entry.get("prism:doi"),
+        "abstract": entry.get("dc:description"),
+        "institutions": list(dict.fromkeys(insts)),
+        "countries": list(dict.fromkeys(countries)),
+        "affiliations_detail": details,
+        "authors": authors_list,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-# Define the schema so empty DataFrames have consistent columns.
 _RESULT_COLUMNS = [
     "eid",
     "title",
@@ -182,35 +246,116 @@ _RESULT_COLUMNS = [
 ]
 
 
-def search_scopus(query: str) -> pd.DataFrame:
-    """Execute a Scopus advanced search and return structured results.
+def search_scopus(
+    query: str,
+    count: int = 25,
+    api_key: str | None = None,
+    inst_token: str | None = None,
+    progress_callback: Any = None,
+) -> pd.DataFrame:
+    """Execute a Scopus search with pagination, progress reporting, and ETA tracking.
 
     Parameters
     ----------
     query:
-        Scopus advanced search string, e.g.
-        ``"TITLE-ABS-KEY(machine learning) AND PUBYEAR > 2019"``.
+        Scopus advanced search string.
+    count:
+        Number of items per pagination request chunk (default: 25).
+    api_key:
+        Optional API key (falls back to SCOPUS_API_KEY environment variable).
+    inst_token:
+        Optional Elsevier Institutional Token.
+    progress_callback:
+        Optional callback accepting (chunk_idx: int, total_chunks: int,
+        retrieved: int, total_available: int, message: str).
 
     Returns
     -------
-    DataFrame with columns ``eid``, ``title``, ``year`` (int | None),
-    ``affiliations`` (list[str]), ``doi`` (str | None), ``abstract`` (str | None),
-    ``institutions`` (list[str]), ``countries`` (list[str]),
-    ``affiliations_detail`` (list[dict[str, str]]), and ``authors`` (list[str]).
-
-    Raises
-    ------
-    RuntimeError
-        If the Scopus API returns an error.
+    DataFrame conforming to _RESULT_COLUMNS.
     """
-    # Import here so the config file is already in place when pybliometrics
-    # reads it at module-import time.
+    resolved_key = (api_key or os.getenv("SCOPUS_API_KEY", "")).strip()
+
+    # Attempt paginated REST requests if an API key is available
+    if resolved_key:
+        headers = {
+            "X-ELS-APIKey": resolved_key,
+            "Accept": "application/json",
+        }
+        if inst_token:
+            headers["X-ELS-Insttoken"] = inst_token.strip()
+
+        base_url = "https://api.elsevier.com/content/search/scopus"
+        start_time = time.time()
+
+        try:
+            params = {"query": query, "start": 0, "count": count, "view": "COMPLETE"}
+            resp = requests.get(base_url, headers=headers, params=params, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                sr = data.get("search-results", {})
+                total_results = int(sr.get("opensearch:totalResults", 0))
+
+                if total_results == 0:
+                    if progress_callback:
+                        progress_callback(1, 1, 0, 0, "No records found | ETA: 00:00")
+                    return pd.DataFrame(columns=_RESULT_COLUMNS)
+
+                total_chunks = max(1, math.ceil(total_results / count))
+                all_rows: list[dict[str, Any]] = []
+
+                # Process chunk 1
+                entries = sr.get("entry", [])
+                for e in entries:
+                    all_rows.append(_parse_entry_to_row(e))
+
+                elapsed = time.time() - start_time
+                avg_time = elapsed / 1
+                remaining_chunks = total_chunks - 1
+                eta_sec = avg_time * remaining_chunks
+                eta_str = format_eta(eta_sec)
+
+                if progress_callback:
+                    msg = (
+                        f"Fetching chunk 1 of {total_chunks}... "
+                        f"({len(all_rows)} / {total_results:,} papers) | ETA: {eta_str}"
+                    )
+                    progress_callback(1, total_chunks, len(all_rows), total_results, msg)
+
+                # Fetch remaining chunks
+                for chunk_idx in range(2, total_chunks + 1):
+                    start = (chunk_idx - 1) * count
+                    p = {"query": query, "start": start, "count": count, "view": "COMPLETE"}
+                    chunk_resp = requests.get(base_url, headers=headers, params=p, timeout=20)
+
+                    if chunk_resp.status_code == 200:
+                        c_data = chunk_resp.json()
+                        c_entries = c_data.get("search-results", {}).get("entry", [])
+                        for e in c_entries:
+                            all_rows.append(_parse_entry_to_row(e))
+
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / chunk_idx
+                    rem_chunks = total_chunks - chunk_idx
+                    eta_sec = avg_time * rem_chunks
+                    eta_str = format_eta(eta_sec)
+
+                    if progress_callback:
+                        msg = (
+                            f"Fetching chunk {chunk_idx} of {total_chunks}... "
+                            f"({len(all_rows)} / {total_results:,} papers) | ETA: {eta_str}"
+                        )
+                        progress_callback(chunk_idx, total_chunks, len(all_rows), total_results, msg)
+
+                return pd.DataFrame(all_rows, columns=_RESULT_COLUMNS)
+
+        except Exception as exc:
+            logger.warning("Paginated REST search exception: %s. Falling back to pybliometrics.", exc)
+
+    # Fallback to pybliometrics.scopus.ScopusSearch
     try:
         from pybliometrics.scopus import ScopusSearch
     except Exception as exc:
-        raise RuntimeError(
-            f"Failed to import pybliometrics. Is it installed? {exc}"
-        ) from exc
+        raise RuntimeError(f"Failed to import pybliometrics: {exc}") from exc
 
     try:
         search = ScopusSearch(query, refresh=True)
@@ -219,7 +364,19 @@ def search_scopus(query: str) -> pd.DataFrame:
 
     results = search.results
     if not results:
+        if progress_callback:
+            progress_callback(1, 1, 0, 0, "No records found | ETA: 00:00")
         return pd.DataFrame(columns=_RESULT_COLUMNS)
+
+    total_results = len(results)
+    if progress_callback:
+        progress_callback(
+            1,
+            1,
+            total_results,
+            total_results,
+            f"Retrieved {total_results:,} papers | ETA: 00:00",
+        )
 
     rows: list[dict[str, Any]] = []
     for doc in results:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Callable
 
 import pandas as pd
@@ -206,16 +207,15 @@ def enrich_dataset_with_text(
 
     total_rows = len(df_out)
     fulltext_attempts = 0
+    fulltext_successes = 0
+    paywall_fallbacks = 0
+    start_time = time.time()
+
+    from scopus_client import format_eta
 
     for idx, (_, row) in enumerate(df_out.iterrows()):
         doi = row.get("doi")
         abstract = row.get("abstract")
-
-        if progress_callback:
-            progress_callback(
-                (idx + 1) / total_rows,
-                f"Processing text: article {idx + 1} of {total_rows}",
-            )
 
         if fetch_full_text and doi and fulltext_attempts < max_fulltext:
             fulltext_attempts += 1
@@ -225,6 +225,10 @@ def enrich_dataset_with_text(
                 abstract_fallback=abstract,
                 inst_token=inst_token,
             )
+            if source == "Full Text":
+                fulltext_successes += 1
+            elif "401" in detail or "403" in detail or "Paywalled" in detail or "Fallback" in detail:
+                paywall_fallbacks += 1
         else:
             # Use abstract directly (bypassed or limit exceeded or no DOI)
             clean_abs = clean_text(abstract)
@@ -245,6 +249,21 @@ def enrich_dataset_with_text(
         texts.append(text)
         sources.append(source)
         details.append(detail)
+
+        # Dynamic ETA calculation
+        elapsed = time.time() - start_time
+        completed = idx + 1
+        remaining = total_rows - completed
+        avg_time = (elapsed / completed) if completed > 0 else 0.0
+        eta_sec = avg_time * remaining
+        eta_str = format_eta(eta_sec)
+
+        if progress_callback:
+            if fetch_full_text:
+                msg = f"Retrieving full text: {completed}/{total_rows} | {paywall_fallbacks} fallbacks | ETA: {eta_str}"
+            else:
+                msg = f"Extracting abstracts: {completed}/{total_rows} | ETA: {eta_str}"
+            progress_callback(completed / total_rows, msg)
 
     df_out["text"] = texts
     df_out["text_source"] = sources

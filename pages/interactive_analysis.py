@@ -131,12 +131,35 @@ if execute_clicked:
         st.warning("Please specify a valid Scopus search query.")
         st.stop()
 
-    with st.spinner("Querying Scopus Search API..."):
-        try:
-            raw_data = search_scopus(query.strip())
-        except RuntimeError as exc:
-            st.error(f"Scopus API Query Failure: {exc}")
-            st.stop()
+    st.markdown("### Execution Progress")
+
+    # Phase 1: Scopus Search API Pagination Progress
+    scopus_progress_bar = st.progress(0.0)
+    scopus_status_box = st.empty()
+
+    def update_scopus_progress(
+        chunk_idx: int, total_chunks: int, current_count: int, total_count: int, msg: str
+    ) -> None:
+        ratio = chunk_idx / total_chunks if total_chunks > 0 else 1.0
+        scopus_progress_bar.progress(min(max(ratio, 0.0), 1.0))
+        scopus_status_box.text(msg)
+
+    try:
+        raw_data = search_scopus(
+            query=query.strip(),
+            count=25,
+            api_key=active_api_key,
+            inst_token=inst_token_input.strip() or None,
+            progress_callback=update_scopus_progress,
+        )
+    except RuntimeError as exc:
+        scopus_progress_bar.empty()
+        scopus_status_box.empty()
+        st.error(f"Scopus API Query Failure: {exc}")
+        st.stop()
+
+    scopus_progress_bar.empty()
+    scopus_status_box.empty()
 
     if raw_data.empty:
         st.warning("No publication records matched the provided query.")
@@ -146,32 +169,25 @@ if execute_clicked:
     st.session_state["last_query"] = query.strip()
     st.session_state["enable_fulltext"] = enable_fulltext
 
-    # Progress-tracked text enrichment
-    progress_bar = st.progress(0.0)
-    status_box = st.empty()
+    # Phase 2: Dual Progress Tracking for Text Retrieval (Full-Text Pipeline)
+    ft_progress_bar = st.progress(0.0)
+    ft_status_box = st.empty()
 
-    def update_progress(ratio: float, msg: str) -> None:
-        progress_bar.progress(min(max(ratio, 0.0), 1.0))
-        status_box.text(msg)
+    def update_ft_progress(ratio: float, msg: str) -> None:
+        ft_progress_bar.progress(min(max(ratio, 0.0), 1.0))
+        ft_status_box.text(msg)
 
-    spinner_msg = (
-        "Retrieving article text from Elsevier API (with abstract fallback)..."
-        if enable_fulltext
-        else "Extracting abstracts (full-text API bypassed)..."
+    enriched = enrich_dataset_with_text(
+        df=raw_data,
+        api_key=active_api_key,
+        max_fulltext=max_fulltext if enable_fulltext else 0,
+        progress_callback=update_ft_progress,
+        inst_token=inst_token_input.strip() or None,
+        fetch_full_text=enable_fulltext,
     )
 
-    with st.spinner(spinner_msg):
-        enriched = enrich_dataset_with_text(
-            df=raw_data,
-            api_key=active_api_key,
-            max_fulltext=max_fulltext if enable_fulltext else 0,
-            progress_callback=update_progress,
-            inst_token=inst_token_input.strip() or None,
-            fetch_full_text=enable_fulltext,
-        )
-
-    progress_bar.empty()
-    status_box.empty()
+    ft_progress_bar.empty()
+    ft_status_box.empty()
 
     st.session_state["enriched_df"] = enriched
 
