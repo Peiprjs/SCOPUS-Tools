@@ -17,7 +17,7 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.22284927
     description: Zenodo archive
-repository-code: 'https://github.com/OWNER/scopus-affiliation-analyzer'
+repository-code: 'https://github.com/peiprjs/scopus-affiliation-analyzer'
 abstract: >-
   A Streamlit dashboard that queries the Elsevier Scopus API
   for publication metadata, classifies author affiliations
@@ -34,4 +34,4 @@ keywords:
   - streamlit
 license: MIT
 version: 0.5.0
-date-released: '2026-09-03'
+date-released: '2026-09-22'
