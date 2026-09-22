@@ -9,6 +9,7 @@ Zero emojis, formal academic design.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from collections import Counter
@@ -18,6 +19,8 @@ import networkx as nx
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+from classifier import classify_affiliation
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +272,7 @@ def build_network_plotly_figure(
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
-        line=dict(width=1.0, color="#888888" if not monochrome else "#555555"),
+        line=dict(width=1.0, color="#555555" if monochrome else "rgba(160, 160, 160, 0.45)"),
         hoverinfo="none",
         mode="lines",
         name="Citations",
@@ -382,7 +385,6 @@ def build_network_plotly_figure(
             fig.add_trace(cat_trace)
 
     fig.update_layout(
-        template="simple_white",
         height=550,
         margin=dict(l=20, r=20, t=30, b=20),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
@@ -393,11 +395,11 @@ def build_network_plotly_figure(
             y=-0.1,
             xanchor="center",
             x=0.5,
-            font=dict(size=11, color="#000000"),
+            font=dict(size=11),
         ),
     )
 
-    return fig
+    return apply_adaptive_theme(fig, monochrome=monochrome, is_network=True)
 
 
 # ---------------------------------------------------------------------------
@@ -473,9 +475,10 @@ def build_descriptive_frequency_figures(
     fig_authors.update_layout(
         height=max(380, len(authors_df) * 22),
         margin=dict(l=150, r=40, t=30, b=40),
-        xaxis=dict(showline=True, linecolor="#000000", dtick=1),
-        yaxis=dict(showline=True, linecolor="#000000"),
+        xaxis=dict(showline=True, dtick=1),
+        yaxis=dict(showline=True),
     )
+    apply_adaptive_theme(fig_authors, monochrome=monochrome, is_network=False)
 
     # 2. Top Institutions
     inst_counts: Counter[str] = Counter()
@@ -526,8 +529,642 @@ def build_descriptive_frequency_figures(
     fig_insts.update_layout(
         height=max(380, len(insts_df) * 22),
         margin=dict(l=220, r=40, t=30, b=40),
-        xaxis=dict(showline=True, linecolor="#000000", dtick=1),
-        yaxis=dict(showline=True, linecolor="#000000"),
+        xaxis=dict(showline=True, dtick=1),
+        yaxis=dict(showline=True),
     )
+    apply_adaptive_theme(fig_insts, monochrome=monochrome, is_network=False)
 
     return fig_authors, fig_insts
+
+
+# ---------------------------------------------------------------------------
+# Theme Adaptation Helper (Dark Mode & Monochrome Print Support)
+# ---------------------------------------------------------------------------
+
+def apply_adaptive_theme(
+    fig: go.Figure,
+    monochrome: bool = False,
+    is_network: bool = False,
+) -> go.Figure:
+    """Apply theme-adaptive styling to Plotly figures.
+
+    Ensures high legibility in both Streamlit Dark and Light modes by
+    omitting hardcoded dark font colors and transparent backgrounds in interactive mode,
+    while enforcing simple_white with solid black lines for print/LaTeX monochrome exports.
+
+    Parameters
+    ----------
+    fig:
+        Plotly Figure to style.
+    monochrome:
+        If True, applies simple_white and black lines for print/export.
+    is_network:
+        If True, disables grid and tick labels for network canvas.
+
+    Returns
+    -------
+    Styled Plotly Figure.
+    """
+    if monochrome:
+        fig.update_layout(
+            template="simple_white",
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#ffffff",
+            font=dict(color="#000000"),
+        )
+        if not is_network:
+            fig.update_xaxes(showline=True, linecolor="#000000", tickfont=dict(color="#000000"))
+            fig.update_yaxes(showline=True, linecolor="#000000", tickfont=dict(color="#000000"))
+    else:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            hoverlabel=dict(
+                bgcolor="rgba(33, 37, 41, 0.95)",
+                font_color="#ffffff",
+                font_size=12,
+            ),
+        )
+        if not is_network:
+            fig.update_xaxes(
+                showline=True,
+                linecolor="rgba(128, 128, 128, 0.4)",
+                gridcolor="rgba(128, 128, 128, 0.2)",
+            )
+            fig.update_yaxes(
+                showline=True,
+                linecolor="rgba(128, 128, 128, 0.4)",
+                gridcolor="rgba(128, 128, 128, 0.2)",
+            )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Author Collaboration Network (Co-Authorship Graph)
+# ---------------------------------------------------------------------------
+
+def build_coauthorship_graph(
+    df: pd.DataFrame,
+    min_collaborations: int = 1,
+    top_n_authors: int | None = None,
+) -> tuple[nx.Graph, pd.DataFrame]:
+    """Construct undirected weighted co-authorship collaboration graph and metrics.
+
+    Identifies undirected edges (author_i -- author_j) weighted by the number of
+    co-authored publications in the dataset. Calculates centrality metrics
+    (Degree, Weighted Degree, Betweenness Centrality, PageRank) and modularity
+    communities.
+
+    Parameters
+    ----------
+    df:
+        DataFrame containing 'authors' (list of author names) and 'eid'.
+    min_collaborations:
+        Minimum co-authored papers required to establish an edge (default: 1).
+    top_n_authors:
+        Optional cap on the number of top prolific authors to include in the graph.
+
+    Returns
+    -------
+    tuple of (nx.Graph, pd.DataFrame)
+        - Undirected NetworkX Graph
+        - Metrics DataFrame sorted by publication count and collaborators count
+    """
+    empty_df = pd.DataFrame(
+        columns=[
+            "author",
+            "publications",
+            "collaborators_count",
+            "collaboration_volume",
+            "betweenness_centrality",
+            "pagerank",
+            "community",
+        ]
+    )
+    if df.empty or "authors" not in df.columns:
+        return nx.Graph(), empty_df
+
+    author_pubs: Counter[str] = Counter()
+    pair_counts: Counter[tuple[str, str]] = Counter()
+
+    for _, row in df.iterrows():
+        auth_raw = row.get("authors")
+        if not isinstance(auth_raw, list):
+            continue
+        cleaned = [
+            str(a).strip()
+            for a in auth_raw
+            if a and str(a).strip() and str(a).strip() not in ("Unknown", "Unknown Author")
+        ]
+        unique_authors = sorted(list(set(cleaned)))
+
+        for a in unique_authors:
+            author_pubs[a] += 1
+
+        if len(unique_authors) >= 2:
+            for u, v in itertools.combinations(unique_authors, 2):
+                pair_counts[(u, v)] += 1
+
+    if not author_pubs:
+        return nx.Graph(), empty_df
+
+    allowed_authors: set[str] | None = None
+    if top_n_authors is not None and top_n_authors > 0:
+        allowed_authors = {a for a, _ in author_pubs.most_common(top_n_authors)}
+
+    G = nx.Graph()
+
+    for a, pubs in author_pubs.items():
+        if allowed_authors is not None and a not in allowed_authors:
+            continue
+        G.add_node(a, publications=pubs)
+
+    for (u, v), w in pair_counts.items():
+        if w >= min_collaborations and G.has_node(u) and G.has_node(v):
+            G.add_edge(u, v, weight=w)
+
+    deg = dict(G.degree())
+    w_deg = dict(G.degree(weight="weight"))
+
+    try:
+        betweenness = nx.betweenness_centrality(G, weight=None, normalized=True)
+    except Exception:
+        betweenness = {n: 0.0 for n in G.nodes()}
+
+    try:
+        pagerank = nx.pagerank(G, alpha=0.85, max_iter=100, weight="weight")
+    except Exception:
+        pagerank = {n: 0.0 for n in G.nodes()}
+
+    community_map: dict[str, str] = {}
+    try:
+        if len(G.nodes()) > 0 and len(G.edges()) > 0:
+            communities = list(nx.community.greedy_modularity_communities(G))
+            for idx, comm in enumerate(communities):
+                c_name = f"Cluster {idx + 1}"
+                for node in comm:
+                    community_map[node] = c_name
+    except Exception:
+        pass
+
+    for node in G.nodes():
+        if node not in community_map:
+            community_map[node] = "Independent / Unclustered"
+
+    records: list[dict[str, Any]] = []
+    for node in G.nodes():
+        records.append(
+            {
+                "author": node,
+                "publications": int(G.nodes[node].get("publications", 1)),
+                "collaborators_count": int(deg.get(node, 0)),
+                "collaboration_volume": int(w_deg.get(node, 0)),
+                "betweenness_centrality": round(float(betweenness.get(node, 0.0)), 4),
+                "pagerank": round(float(pagerank.get(node, 0.0)), 4),
+                "community": community_map.get(node, "Independent / Unclustered"),
+            }
+        )
+
+    out_df = pd.DataFrame(records)
+    if not out_df.empty:
+        out_df = out_df.sort_values(
+            by=["publications", "collaborators_count", "collaboration_volume"],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+
+    return G, out_df
+
+
+def build_coauthorship_plotly_figure(
+    G: nx.Graph,
+    author_df: pd.DataFrame,
+    metric: str = "collaborators_count",
+    monochrome: bool = False,
+) -> go.Figure:
+    """Render an interactive or monochrome Plotly co-authorship collaboration graph.
+
+    Parameters
+    ----------
+    G:
+        NetworkX undirected co-authorship graph.
+    author_df:
+        DataFrame containing author metrics.
+    metric:
+        Centrality metric to scale node sizes ('collaborators_count', 'publications', 'betweenness_centrality').
+    monochrome:
+        If True, renders monochrome figure with distinct pattern markers for printing.
+
+    Returns
+    -------
+    Plotly Figure instance.
+    """
+    if len(G) == 0:
+        fig_empty = go.Figure()
+        fig_empty.update_layout(title="Author Collaboration Network (No Data Available)")
+        return apply_adaptive_theme(fig_empty, monochrome=monochrome, is_network=True)
+
+    pos = nx.spring_layout(G, k=0.35, seed=42, iterations=50)
+
+    edge_x: list[float | None] = []
+    edge_y: list[float | None] = []
+    for u, v in G.edges():
+        if u in pos and v in pos:
+            x0, y0 = pos[u]
+            x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+    edge_trace = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        line=dict(
+            width=1.0,
+            color="#555555" if monochrome else "rgba(160, 160, 160, 0.45)",
+        ),
+        hoverinfo="none",
+        mode="lines",
+        name="Co-authorship",
+    )
+
+    lookup = author_df.set_index("author").to_dict(orient="index") if not author_df.empty and "author" in author_df.columns else {}
+
+    metric_col = metric if metric in ["collaborators_count", "publications", "betweenness_centrality"] else "collaborators_count"
+    vals = [float(lookup.get(n, {}).get(metric_col, 0.0)) for n in G.nodes()]
+    max_val = max(vals) if vals and max(vals) > 0 else 1.0
+
+    node_x: list[float] = []
+    node_y: list[float] = []
+    node_text: list[str] = []
+    node_sizes: list[float] = []
+    node_clusters: list[str] = []
+
+    for n in G.nodes():
+        if n not in pos:
+            continue
+        x, y = pos[n]
+        node_x.append(x)
+        node_y.append(y)
+
+        info = lookup.get(n, {})
+        pubs = info.get("publications", 1)
+        deg = info.get("collaborators_count", 0)
+        vol = info.get("collaboration_volume", 0)
+        betw = info.get("betweenness_centrality", 0.0)
+        pr = info.get("pagerank", 0.0)
+        comm = info.get("community", "Independent / Unclustered")
+
+        curr_val = float(info.get(metric_col, 0.0))
+        scaled_size = 10.0 + 26.0 * (curr_val / max_val)
+        node_sizes.append(scaled_size)
+        node_clusters.append(comm)
+
+        hover_str = (
+            f"<b>Researcher: {n}</b><br>"
+            f"Cohort Publications: {pubs}<br>"
+            f"Collaborators: {deg} | Collaboration Ties: {vol}<br>"
+            f"Research Cluster: {comm}<br>"
+            f"Betweenness Centrality: {betw:.4f} | PageRank: {pr:.4f}"
+        )
+        node_text.append(hover_str)
+
+    fig = go.Figure()
+    fig.add_trace(edge_trace)
+
+    if monochrome:
+        node_trace = go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode="markers",
+            hoverinfo="text",
+            text=node_text,
+            marker=dict(
+                size=node_sizes,
+                color="#f0f0f0",
+                symbol="circle",
+                line=dict(width=1.5, color="#000000"),
+            ),
+            name="Researchers",
+        )
+        fig.add_trace(node_trace)
+    else:
+        palette = px.colors.qualitative.Plotly + px.colors.qualitative.Safe
+        unique_clusters = sorted(list(set(node_clusters)))
+        for c_idx, cluster in enumerate(unique_clusters):
+            indices = [i for i, c in enumerate(node_clusters) if c == cluster]
+            cluster_color = palette[c_idx % len(palette)]
+            cluster_trace = go.Scatter(
+                x=[node_x[i] for i in indices],
+                y=[node_y[i] for i in indices],
+                mode="markers",
+                hoverinfo="text",
+                text=[node_text[i] for i in indices],
+                marker=dict(
+                    size=[node_sizes[i] for i in indices],
+                    color=cluster_color,
+                    line=dict(width=1.2, color="#333333"),
+                ),
+                name=cluster,
+            )
+            fig.add_trace(cluster_trace)
+
+    fig.update_layout(
+        height=550,
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11),
+        ),
+    )
+    return apply_adaptive_theme(fig, monochrome=monochrome, is_network=True)
+
+
+# ---------------------------------------------------------------------------
+# Institutional Collaboration Network (Co-Affiliation Graph)
+# ---------------------------------------------------------------------------
+
+def build_coinstitution_graph(
+    df: pd.DataFrame,
+    min_collaborations: int = 1,
+    top_n_institutions: int | None = None,
+) -> tuple[nx.Graph, pd.DataFrame]:
+    """Construct undirected weighted institutional collaboration graph and metrics.
+
+    Identifies undirected edges (institution_i -- institution_j) weighted by
+    shared publications. Classifies institutional sectors (Academia, Industry, Unknown)
+    and computes centrality metrics.
+
+    Parameters
+    ----------
+    df:
+        DataFrame containing 'institutions' or 'affiliations' list.
+    min_collaborations:
+        Minimum shared papers required to establish an edge (default: 1).
+    top_n_institutions:
+        Optional cap on the number of top prolific institutions to include.
+
+    Returns
+    -------
+    tuple of (nx.Graph, pd.DataFrame)
+        - Undirected NetworkX Graph
+        - Metrics DataFrame sorted by publication count and partner count
+    """
+    empty_df = pd.DataFrame(
+        columns=[
+            "institution",
+            "sector",
+            "publications",
+            "partners_count",
+            "collaboration_volume",
+            "betweenness_centrality",
+            "pagerank",
+        ]
+    )
+    inst_col = "institutions" if "institutions" in df.columns else "affiliations"
+    if df.empty or inst_col not in df.columns:
+        return nx.Graph(), empty_df
+
+    inst_pubs: Counter[str] = Counter()
+    pair_counts: Counter[tuple[str, str]] = Counter()
+
+    for _, row in df.iterrows():
+        inst_raw = row.get(inst_col)
+        if not isinstance(inst_raw, list):
+            continue
+        cleaned = [
+            str(i).strip()
+            for i in inst_raw
+            if i
+            and str(i).strip()
+            and str(i).strip() not in ("Unknown Institution", "Unknown", "None", "")
+        ]
+        unique_insts = sorted(list(set(cleaned)))
+
+        for inst in unique_insts:
+            inst_pubs[inst] += 1
+
+        if len(unique_insts) >= 2:
+            for u, v in itertools.combinations(unique_insts, 2):
+                pair_counts[(u, v)] += 1
+
+    if not inst_pubs:
+        return nx.Graph(), empty_df
+
+    allowed_insts: set[str] | None = None
+    if top_n_institutions is not None and top_n_institutions > 0:
+        allowed_insts = {i for i, _ in inst_pubs.most_common(top_n_institutions)}
+
+    G = nx.Graph()
+
+    for inst, pubs in inst_pubs.items():
+        if allowed_insts is not None and inst not in allowed_insts:
+            continue
+        sector = classify_affiliation(inst)
+        G.add_node(inst, publications=pubs, sector=sector)
+
+    for (u, v), w in pair_counts.items():
+        if w >= min_collaborations and G.has_node(u) and G.has_node(v):
+            G.add_edge(u, v, weight=w)
+
+    deg = dict(G.degree())
+    w_deg = dict(G.degree(weight="weight"))
+
+    try:
+        betweenness = nx.betweenness_centrality(G, weight=None, normalized=True)
+    except Exception:
+        betweenness = {n: 0.0 for n in G.nodes()}
+
+    try:
+        pagerank = nx.pagerank(G, alpha=0.85, max_iter=100, weight="weight")
+    except Exception:
+        pagerank = {n: 0.0 for n in G.nodes()}
+
+    records: list[dict[str, Any]] = []
+    for node in G.nodes():
+        records.append(
+            {
+                "institution": node,
+                "sector": G.nodes[node].get("sector", "Unknown"),
+                "publications": int(G.nodes[node].get("publications", 1)),
+                "partners_count": int(deg.get(node, 0)),
+                "collaboration_volume": int(w_deg.get(node, 0)),
+                "betweenness_centrality": round(float(betweenness.get(node, 0.0)), 4),
+                "pagerank": round(float(pagerank.get(node, 0.0)), 4),
+            }
+        )
+
+    out_df = pd.DataFrame(records)
+    if not out_df.empty:
+        out_df = out_df.sort_values(
+            by=["publications", "partners_count", "collaboration_volume"],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+
+    return G, out_df
+
+
+def build_coinstitution_plotly_figure(
+    G: nx.Graph,
+    inst_df: pd.DataFrame,
+    metric: str = "partners_count",
+    monochrome: bool = False,
+) -> go.Figure:
+    """Render an interactive or monochrome Plotly institutional collaboration graph.
+
+    Parameters
+    ----------
+    G:
+        NetworkX undirected institutional collaboration graph.
+    inst_df:
+        DataFrame containing institution metrics and sector classification.
+    metric:
+        Centrality metric to scale node sizes ('partners_count', 'publications', 'betweenness_centrality').
+    monochrome:
+        If True, renders monochrome figure with distinct pattern markers for printing.
+
+    Returns
+    -------
+    Plotly Figure instance.
+    """
+    if len(G) == 0:
+        fig_empty = go.Figure()
+        fig_empty.update_layout(title="Institutional Collaboration Network (No Data Available)")
+        return apply_adaptive_theme(fig_empty, monochrome=monochrome, is_network=True)
+
+    pos = nx.spring_layout(G, k=0.35, seed=42, iterations=50)
+
+    edge_x: list[float | None] = []
+    edge_y: list[float | None] = []
+    for u, v in G.edges():
+        if u in pos and v in pos:
+            x0, y0 = pos[u]
+            x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+    edge_trace = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        line=dict(
+            width=1.0,
+            color="#555555" if monochrome else "rgba(160, 160, 160, 0.45)",
+        ),
+        hoverinfo="none",
+        mode="lines",
+        name="Joint Research",
+    )
+
+    lookup = inst_df.set_index("institution").to_dict(orient="index") if not inst_df.empty and "institution" in inst_df.columns else {}
+
+    metric_col = metric if metric in ["partners_count", "publications", "betweenness_centrality"] else "partners_count"
+    vals = [float(lookup.get(n, {}).get(metric_col, 0.0)) for n in G.nodes()]
+    max_val = max(vals) if vals and max(vals) > 0 else 1.0
+
+    node_x: list[float] = []
+    node_y: list[float] = []
+    node_text: list[str] = []
+    node_sizes: list[float] = []
+    node_sectors: list[str] = []
+
+    color_map = {
+        "Academia": "#1f77b4",
+        "Industry": "#d62728",
+        "Unknown": "#7f7f7f",
+    }
+    symbol_map = {
+        "Academia": "circle",
+        "Industry": "square",
+        "Unknown": "diamond",
+    }
+
+    for n in G.nodes():
+        if n not in pos:
+            continue
+        x, y = pos[n]
+        node_x.append(x)
+        node_y.append(y)
+
+        info = lookup.get(n, {})
+        sector = info.get("sector", "Unknown")
+        pubs = info.get("publications", 1)
+        deg = info.get("partners_count", 0)
+        vol = info.get("collaboration_volume", 0)
+        betw = info.get("betweenness_centrality", 0.0)
+        pr = info.get("pagerank", 0.0)
+
+        curr_val = float(info.get(metric_col, 0.0))
+        scaled_size = 10.0 + 26.0 * (curr_val / max_val)
+        node_sizes.append(scaled_size)
+        node_sectors.append(sector)
+
+        hover_str = (
+            f"<b>Organization: {n}</b><br>"
+            f"Sector: {sector}<br>"
+            f"Cohort Publications: {pubs}<br>"
+            f"Partner Organizations: {deg} | Joint Papers: {vol}<br>"
+            f"Betweenness Centrality: {betw:.4f} | PageRank: {pr:.4f}"
+        )
+        node_text.append(hover_str)
+
+    fig = go.Figure()
+    fig.add_trace(edge_trace)
+
+    if monochrome:
+        node_symbols = [symbol_map.get(s, "circle") for s in node_sectors]
+        node_trace = go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode="markers",
+            hoverinfo="text",
+            text=node_text,
+            marker=dict(
+                size=node_sizes,
+                color="#f0f0f0",
+                symbol=node_symbols,
+                line=dict(width=1.5, color="#000000"),
+            ),
+            name="Organizations",
+        )
+        fig.add_trace(node_trace)
+    else:
+        for sec in ["Academia", "Industry", "Unknown"]:
+            sub_idx = [i for i, s in enumerate(node_sectors) if s == sec]
+            if not sub_idx:
+                continue
+            sec_trace = go.Scatter(
+                x=[node_x[i] for i in sub_idx],
+                y=[node_y[i] for i in sub_idx],
+                mode="markers",
+                hoverinfo="text",
+                text=[node_text[i] for i in sub_idx],
+                marker=dict(
+                    size=[node_sizes[i] for i in sub_idx],
+                    color=color_map.get(sec, "#7f7f7f"),
+                    symbol=symbol_map.get(sec, "circle"),
+                    line=dict(width=1.2, color="#333333"),
+                ),
+                name=sec,
+            )
+            fig.add_trace(sec_trace)
+
+    fig.update_layout(
+        height=550,
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11),
+        ),
+    )
+    return apply_adaptive_theme(fig, monochrome=monochrome, is_network=True)
+

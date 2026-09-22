@@ -69,6 +69,8 @@ class TestLatexExporter(unittest.TestCase):
         self.assertIn("fig_geopolitical_correlation", figs)
         self.assertIn("fig_keyword_prevalence", figs)
         self.assertIn("fig_citation_network", figs)
+        self.assertIn("fig_coauthorship_network", figs)
+        self.assertIn("fig_coinstitution_network", figs)
         self.assertIn("fig_top_authors", figs)
         self.assertIn("fig_top_institutions", figs)
 
@@ -90,6 +92,8 @@ class TestLatexExporter(unittest.TestCase):
             "fig_geopolitical_correlation": "fig_geopolitical_correlation.png",
             "fig_keyword_prevalence": "fig_keyword_prevalence.png",
             "fig_citation_network": "fig_citation_network.png",
+            "fig_coauthorship_network": "fig_coauthorship_network.png",
+            "fig_coinstitution_network": "fig_coinstitution_network.png",
             "fig_top_authors": "fig_top_authors.png",
             "fig_top_institutions": "fig_top_institutions.png",
         }
@@ -101,6 +105,8 @@ class TestLatexExporter(unittest.TestCase):
         self.assertIn(r"\includegraphics", tex)
         self.assertIn("fig_affiliation_distribution.png", tex)
         self.assertIn("fig_citation_network.png", tex)
+        self.assertIn("fig_coauthorship_network.png", tex)
+        self.assertIn("fig_coinstitution_network.png", tex)
         self.assertIn("fig_top_authors.png", tex)
         self.assertIn("fig_top_institutions.png", tex)
 
@@ -126,6 +132,8 @@ class TestLatexExporter(unittest.TestCase):
             self.assertIn("fig_geopolitical_correlation.png", names)
             self.assertIn("fig_keyword_prevalence.png", names)
             self.assertIn("fig_citation_network.png", names)
+            self.assertIn("fig_coauthorship_network.png", names)
+            self.assertIn("fig_coinstitution_network.png", names)
             self.assertIn("fig_top_authors.png", names)
             self.assertIn("fig_top_institutions.png", names)
 

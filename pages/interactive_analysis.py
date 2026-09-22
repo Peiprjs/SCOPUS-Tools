@@ -10,11 +10,14 @@ Zero emojis, formal academic design.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
+import networkx as nx
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -24,7 +27,12 @@ from classifier import classify_geography, classify_paper
 from fulltext_client import enrich_dataset_with_text
 from keyword_matcher import add_keyword_features, parse_keywords
 from network_analyzer import (
+    apply_adaptive_theme,
     build_citation_graph,
+    build_coauthorship_graph,
+    build_coauthorship_plotly_figure,
+    build_coinstitution_graph,
+    build_coinstitution_plotly_figure,
     build_descriptive_frequency_figures,
     build_network_plotly_figure,
     extract_citation_edges,
@@ -105,7 +113,21 @@ with st.sidebar:
         use_container_width=True,
     )
 
+    st.markdown("---")
+    st.header("Developer & Diagnostics")
+    debug_mode = st.toggle(
+        "Enable Debug Mode",
+        value=st.session_state.get("debug_mode", False),
+        help="Display runtime telemetry, execution timings, network topology metrics, session state inspector, and raw metadata inspection.",
+    )
+    st.session_state["debug_mode"] = debug_mode
+
 active_api_key = api_key_input.strip()
+
+if debug_mode:
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("scopus_client").setLevel(logging.DEBUG)
+    logging.getLogger("network_analyzer").setLevel(logging.DEBUG)
 
 # --- Header -----------------------------------------------------------------
 
@@ -144,6 +166,7 @@ if execute_clicked:
         scopus_progress_bar.progress(min(max(ratio, 0.0), 1.0))
         scopus_status_box.text(msg)
 
+    t_search_start = time.time()
     try:
         raw_data = search_scopus(
             query=query.strip(),
@@ -158,6 +181,7 @@ if execute_clicked:
         st.error(f"Scopus API Query Failure: {exc}")
         st.stop()
 
+    st.session_state["timing_scopus_search"] = time.time() - t_search_start
     scopus_progress_bar.empty()
     scopus_status_box.empty()
 
@@ -177,6 +201,7 @@ if execute_clicked:
         ft_progress_bar.progress(min(max(ratio, 0.0), 1.0))
         ft_status_box.text(msg)
 
+    t_ft_start = time.time()
     enriched = enrich_dataset_with_text(
         df=raw_data,
         api_key=active_api_key,
@@ -185,6 +210,7 @@ if execute_clicked:
         inst_token=inst_token_input.strip() or None,
         fetch_full_text=enable_fulltext,
     )
+    st.session_state["timing_fulltext"] = time.time() - t_ft_start
 
     ft_progress_bar.empty()
     ft_status_box.empty()
@@ -199,6 +225,7 @@ if execute_clicked:
         progress_bar_cit.progress(min(max(ratio, 0.0), 1.0))
         status_box_cit.text(msg)
 
+    t_cit_start = time.time()
     with st.spinner("Harvesting references and resolving internal cross-citations..."):
         edges = extract_citation_edges(
             df=enriched,
@@ -206,6 +233,7 @@ if execute_clicked:
             inst_token=inst_token_input.strip() or None,
             progress_callback=update_cit_progress,
         )
+    st.session_state["timing_citations"] = time.time() - t_cit_start
 
     progress_bar_cit.empty()
     status_box_cit.empty()
@@ -326,6 +354,16 @@ citation_edges = st.session_state.get("citation_edges", [])
 citation_graph, analyzed_df = build_citation_graph(analyzed_df, citation_edges)
 st.session_state["citation_graph"] = citation_graph
 
+# Author Collaboration Network Construction
+coauth_graph, coauth_df = build_coauthorship_graph(analyzed_df)
+st.session_state["coauth_graph"] = coauth_graph
+st.session_state["coauth_df"] = coauth_df
+
+# Institutional Collaboration Network Construction
+coinstr_graph, coinst_df = build_coinstitution_graph(analyzed_df)
+st.session_state["coinstr_graph"] = coinstr_graph
+st.session_state["coinst_df"] = coinst_df
+
 # Save to shared session_state for Printable Report page
 st.session_state["analyzed_df"] = analyzed_df
 st.session_state["parsed_kws"] = parsed_kws
@@ -393,14 +431,128 @@ with m4:
 
 st.markdown("---")
 
+# --- Developer Diagnostics Panel (Debug Mode) -------------------------------
+
+if debug_mode:
+    with st.expander("Developer Diagnostics & Telemetry", expanded=True):
+        st.subheader("System Telemetry & Performance")
+
+        # 1. Execution Timers
+        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+        t_scopus = st.session_state.get("timing_scopus_search", 0.0)
+        t_ft = st.session_state.get("timing_fulltext", 0.0)
+        t_cit = st.session_state.get("timing_citations", 0.0)
+        total_api_time = t_scopus + t_ft + t_cit
+        with t_col1:
+            st.metric("Scopus Query Latency", f"{t_scopus:.2f}s")
+        with t_col2:
+            st.metric("Full-Text API Latency", f"{t_ft:.2f}s")
+        with t_col3:
+            st.metric("Citation Extraction Latency", f"{t_cit:.2f}s")
+        with t_col4:
+            st.metric("Total Network API Time", f"{total_api_time:.2f}s")
+
+        st.markdown("---")
+        st.markdown("**Graph Topology Telemetry**")
+
+        topo_data = [
+            {
+                "Network Scope": "Internal Citation Network (Directed)",
+                "Nodes (V)": len(citation_graph.nodes()),
+                "Edges (E)": len(citation_graph.edges()),
+                "Density": round(float(nx.density(citation_graph)), 5) if len(citation_graph) > 0 else 0.0,
+                "Connected Components": nx.number_weakly_connected_components(citation_graph) if len(citation_graph) > 0 else 0,
+                "Isolated Nodes": sum(1 for _, d in citation_graph.degree() if d == 0),
+            },
+            {
+                "Network Scope": "Author Collaboration Network (Undirected)",
+                "Nodes (V)": len(coauth_graph.nodes()),
+                "Edges (E)": len(coauth_graph.edges()),
+                "Density": round(float(nx.density(coauth_graph)), 5) if len(coauth_graph) > 0 else 0.0,
+                "Connected Components": nx.number_connected_components(coauth_graph) if len(coauth_graph) > 0 else 0,
+                "Isolated Nodes": sum(1 for _, d in coauth_graph.degree() if d == 0),
+            },
+            {
+                "Network Scope": "Institutional Collaboration Network (Undirected)",
+                "Nodes (V)": len(coinstr_graph.nodes()),
+                "Edges (E)": len(coinstr_graph.edges()),
+                "Density": round(float(nx.density(coinstr_graph)), 5) if len(coinstr_graph) > 0 else 0.0,
+                "Connected Components": nx.number_connected_components(coinstr_graph) if len(coinstr_graph) > 0 else 0,
+                "Isolated Nodes": sum(1 for _, d in coinstr_graph.degree() if d == 0),
+            },
+        ]
+        st.dataframe(pd.DataFrame(topo_data), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("**Full-Text Extraction Telemetry & Status Breakdown**")
+        ft_t1, ft_t2, ft_t3, ft_t4 = st.columns(4)
+        total_cohort = len(analyzed_df)
+        n_full = int((analyzed_df.get("text_source", pd.Series(dtype=str)) == "Full Text").sum())
+        n_abs = int((analyzed_df.get("text_source", pd.Series(dtype=str)) == "Abstract").sum())
+        n_none = int((analyzed_df.get("text_source", pd.Series(dtype=str)) == "None").sum())
+        with ft_t1:
+            st.metric("Pipeline Mode", "Full-Text API Active" if is_ft_enabled else "Abstract Bypassed")
+        with ft_t2:
+            st.metric("Full-Text Extracted", f"{n_full} / {total_cohort}")
+        with ft_t3:
+            st.metric("Abstract Fallbacks", f"{n_abs} / {total_cohort}")
+        with ft_t4:
+            st.metric("Missing Payloads", f"{n_none} / {total_cohort}")
+
+        if "text_status_detail" in analyzed_df.columns:
+            detail_counts = analyzed_df["text_status_detail"].value_counts().reset_index()
+            detail_counts.columns = ["Status Detail", "Count"]
+            detail_counts["Percentage"] = (detail_counts["Count"] / total_cohort * 100).round(1).astype(str) + "%"
+            st.dataframe(detail_counts, use_container_width=True, hide_index=True)
+
+            has_auth_err = analyzed_df["text_status_detail"].str.contains("Requestor configuration settings|403", case=False, na=False).any()
+            if has_auth_err:
+                st.info(
+                    "ScienceDirect API Entitlement Advisory: Queries to the Elsevier Article Retrieval API returned HTTP 403 "
+                    "('Requestor configuration settings insufficient for access to this resource'). While your credentials "
+                    "successfully authorize Scopus Search and Abstract endpoints, Elsevier requires explicit ScienceDirect Text "
+                    "and Data Mining (TDM) or campus IP-range authorization for full-text article XML/text downloads. "
+                    "All records have safely fallen back to authoritative Scopus abstracts."
+                )
+
+        st.markdown("---")
+        d_sub1, d_sub2 = st.columns(2)
+        with d_sub1:
+            st.markdown("**Dataset Schema & Memory Footprint**")
+            mem_kb = analyzed_df.memory_usage(deep=True).sum() / 1024.0
+            st.text(f"Dimensions: {analyzed_df.shape[0]} rows x {analyzed_df.shape[1]} columns")
+            st.text(f"Total Memory Footprint: {mem_kb:.1f} KB")
+            check_cols = [c for c in ["doi", "abstract", "authors", "institutions", "countries"] if c in analyzed_df.columns]
+            null_summary = analyzed_df[check_cols].isnull().sum()
+            st.text(f"Missing Values:\n{null_summary.to_string()}")
+        with d_sub2:
+            st.markdown("**Session State Variable Inspector**")
+            session_keys_summary = [
+                {"Key": k, "Type": type(v).__name__, "Size/Length": len(v) if hasattr(v, "__len__") else "N/A"}
+                for k, v in st.session_state.items()
+                if not k.startswith("_")
+            ]
+            st.dataframe(pd.DataFrame(session_keys_summary), use_container_width=True, hide_index=True)
+
+        with st.expander("Inspect Raw Search Record Payloads (First 2 Documents)"):
+            raw_sample = st.session_state.get("raw_df")
+            if raw_sample is not None and not raw_sample.empty:
+                st.json(raw_sample.head(2).to_dict(orient="records"))
+            else:
+                st.text("No raw dataset available in session.")
+
+    st.markdown("---")
+
 # --- Tabbed Analytical Views ------------------------------------------------
 
-tab_affil, tab_geo, tab_kw, tab_net, tab_desc, tab_data = st.tabs(
+tab_affil, tab_geo, tab_kw, tab_net, tab_auth_net, tab_inst_net, tab_desc, tab_data = st.tabs(
     [
         "Affiliation Trends",
         "Geo Trends",
         "Keyword Frequency",
         "Citation Network",
+        "Author Collaboration",
+        "Institutional Collaboration",
         "Descriptive Metrics",
         "Structured Dataset & Export",
     ]
@@ -448,6 +600,8 @@ with tab_affil:
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
             margin=dict(l=20, r=20, t=20, b=30),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
         )
         st.plotly_chart(fig_donut, use_container_width=True)
 
@@ -473,8 +627,10 @@ with tab_affil:
             },
         )
         fig_temporal.update_layout(
-            xaxis=dict(dtick=1, showgrid=True, gridcolor="#e5e5e5"),
-            yaxis=dict(range=[0, 105], showgrid=True, gridcolor="#e5e5e5"),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(dtick=1, showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
+            yaxis=dict(range=[0, 105], showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             margin=dict(l=20, r=20, t=20, b=30),
         )
@@ -508,6 +664,8 @@ with tab_geo:
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
             margin=dict(l=20, r=20, t=20, b=30),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
         )
         st.plotly_chart(fig_geo_donut, use_container_width=True)
 
@@ -531,8 +689,10 @@ with tab_geo:
             },
         )
         fig_cross.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#e5e5e5"),
+            yaxis=dict(showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             margin=dict(l=20, r=20, t=20, b=30),
         )
@@ -589,8 +749,10 @@ with tab_kw:
             },
         )
         fig_kw_bar.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#e5e5e5"),
+            yaxis=dict(showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             margin=dict(l=20, r=20, t=20, b=30),
         )
@@ -632,6 +794,8 @@ with tab_kw:
                 )
             )
             fig_heat.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
                 xaxis=dict(title="Publication Year", dtick=1),
                 yaxis=dict(title="Keyword"),
                 margin=dict(l=20, r=20, t=20, b=30),
@@ -672,8 +836,10 @@ with tab_kw:
                 },
             )
             fig_trend.update_layout(
-                xaxis=dict(dtick=1, showgrid=True, gridcolor="#e5e5e5"),
-                yaxis=dict(showgrid=True, gridcolor="#e5e5e5"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(dtick=1, showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
+                yaxis=dict(showgrid=True, gridcolor="rgba(128, 128, 128, 0.2)"),
                 legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
                 margin=dict(l=20, r=20, t=20, b=30),
             )
@@ -737,7 +903,239 @@ with tab_net:
         st.dataframe(hub_df, use_container_width=True, hide_index=True)
 
 
-# --- Tab 5: Descriptive Metrics ---------------------------------------------
+# --- Tab 5: Author Collaboration --------------------------------------------
+
+with tab_auth_net:
+    st.subheader("Author Collaboration Network Analysis")
+    st.caption(
+        "Models undirected co-authorship relationships across the research cohort. "
+        "Edges connect researchers who co-authored one or more publications together, "
+        "revealing collaborative research clusters and cross-team bridging authors."
+    )
+
+    n_authors = len(coauth_graph.nodes())
+    n_auth_edges = len(coauth_graph.edges())
+    density_auth = (2.0 * n_auth_edges / (n_authors * (n_authors - 1))) if n_authors > 1 else 0.0
+    isolated_auth = sum(1 for _, d in coauth_graph.degree() if d == 0)
+
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    with ac1:
+        st.metric(label="Total Cohort Authors", value=f"{n_authors:,}")
+    with ac2:
+        st.metric(label="Co-authorship Ties", value=f"{n_auth_edges:,}")
+    with ac3:
+        st.metric(label="Isolated Authors", value=f"{isolated_auth:,}")
+    with ac4:
+        st.metric(label="Collaboration Density", value=f"{density_auth:.4f}")
+
+    st.markdown("---")
+
+    col_ctrl1, col_ctrl2 = st.columns(2)
+    with col_ctrl1:
+        auth_scale_metric = st.radio(
+            "Scale Node Size By:",
+            options=[
+                "Collaborators Count (Degree)",
+                "Cohort Publications",
+                "Betweenness Centrality (Bridging Authors)",
+            ],
+            horizontal=True,
+            key="auth_node_scale",
+        )
+    with col_ctrl2:
+        max_edge_w = max([d.get("weight", 1) for _, _, d in coauth_graph.edges(data=True)] or [1])
+        min_coauth = st.slider(
+            "Minimum Co-authored Papers Threshold:",
+            min_value=1,
+            max_value=max(2, max_edge_w),
+            value=1,
+            key="auth_min_coauth",
+            help="Filter edges to only display relationships with at least this number of joint papers.",
+        )
+
+    auth_metric_key = (
+        "collaborators_count"
+        if "Collaborators" in auth_scale_metric
+        else "publications"
+        if "Publications" in auth_scale_metric
+        else "betweenness_centrality"
+    )
+
+    if min_coauth > 1:
+        filtered_auth_graph, _ = build_coauthorship_graph(analyzed_df, min_collaborations=min_coauth)
+    else:
+        filtered_auth_graph = coauth_graph
+
+    fig_coauth = build_coauthorship_plotly_figure(
+        G=filtered_auth_graph,
+        author_df=coauth_df,
+        metric=auth_metric_key,
+        monochrome=False,
+    )
+    st.plotly_chart(fig_coauth, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Top Collaborating Researchers")
+    st.caption("Ranked by number of distinct collaborators and total publication count.")
+
+    if not coauth_df.empty:
+        auth_display_df = coauth_df.head(15)[
+            [
+                "author",
+                "publications",
+                "collaborators_count",
+                "collaboration_volume",
+                "betweenness_centrality",
+                "pagerank",
+                "community",
+            ]
+        ].copy()
+        auth_display_df.columns = [
+            "Researcher",
+            "Cohort Publications",
+            "Collaborators",
+            "Joint Papers",
+            "Betweenness Centrality",
+            "PageRank",
+            "Research Cluster",
+        ]
+        st.dataframe(auth_display_df, use_container_width=True, hide_index=True)
+
+    # Top Collaborating Pairs
+    auth_pairs: list[dict[str, Any]] = []
+    for u, v, data in coauth_graph.edges(data=True):
+        w = data.get("weight", 1)
+        auth_pairs.append({"Author 1": u, "Author 2": v, "Joint Publications": w})
+
+    if auth_pairs:
+        st.markdown("---")
+        st.subheader("Top Research Partnerships (Author Pairs)")
+        st.caption("Pairs of researchers with the highest number of co-authored publications in this cohort.")
+        top_pairs_df = (
+            pd.DataFrame(auth_pairs)
+            .sort_values(by="Joint Publications", ascending=False)
+            .head(10)
+        )
+        st.dataframe(top_pairs_df, use_container_width=True, hide_index=True)
+
+
+# --- Tab 6: Institutional Collaboration -------------------------------------
+
+with tab_inst_net:
+    st.subheader("Institutional Collaboration Network Analysis")
+    st.caption(
+        "Maps inter-organizational co-affiliations across the research cohort. "
+        "Nodes represent research organizations color-coded by sector (Academia blue, "
+        "Industry red, Unknown gray), illustrating public-private research partnerships and consortia."
+    )
+
+    n_insts = len(coinstr_graph.nodes())
+    n_inst_edges = len(coinstr_graph.edges())
+    density_inst = (2.0 * n_inst_edges / (n_insts * (n_insts - 1))) if n_insts > 1 else 0.0
+    isolated_inst = sum(1 for _, d in coinstr_graph.degree() if d == 0)
+
+    ic1, ic2, ic3, ic4 = st.columns(4)
+    with ic1:
+        st.metric(label="Total Organizations", value=f"{n_insts:,}")
+    with ic2:
+        st.metric(label="Inter-organizational Ties", value=f"{n_inst_edges:,}")
+    with ic3:
+        st.metric(label="Independent Institutions", value=f"{isolated_inst:,}")
+    with ic4:
+        st.metric(label="Network Density", value=f"{density_inst:.4f}")
+
+    st.markdown("---")
+
+    icol_ctrl1, icol_ctrl2 = st.columns(2)
+    with icol_ctrl1:
+        inst_scale_metric = st.radio(
+            "Scale Node Size By:",
+            options=[
+                "Partner Organizations (Degree)",
+                "Cohort Publications",
+                "Betweenness Centrality (Connecting Hubs)",
+            ],
+            horizontal=True,
+            key="inst_node_scale",
+        )
+    with icol_ctrl2:
+        max_inst_w = max([d.get("weight", 1) for _, _, d in coinstr_graph.edges(data=True)] or [1])
+        min_coinst = st.slider(
+            "Minimum Joint Publications Threshold:",
+            min_value=1,
+            max_value=max(2, max_inst_w),
+            value=1,
+            key="inst_min_coinst",
+            help="Filter edges to only display partnerships with at least this number of joint papers.",
+        )
+
+    inst_metric_key = (
+        "partners_count"
+        if "Partner" in inst_scale_metric
+        else "publications"
+        if "Publications" in inst_scale_metric
+        else "betweenness_centrality"
+    )
+
+    if min_coinst > 1:
+        filtered_inst_graph, _ = build_coinstitution_graph(analyzed_df, min_collaborations=min_coinst)
+    else:
+        filtered_inst_graph = coinstr_graph
+
+    fig_coinst = build_coinstitution_plotly_figure(
+        G=filtered_inst_graph,
+        inst_df=coinst_df,
+        metric=inst_metric_key,
+        monochrome=False,
+    )
+    st.plotly_chart(fig_coinst, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Top Hub Organizations & Consortia")
+    st.caption("Ranked by number of partnering research organizations and publication volume.")
+
+    if not coinst_df.empty:
+        inst_display_df = coinst_df.head(15)[
+            [
+                "institution",
+                "sector",
+                "publications",
+                "partners_count",
+                "collaboration_volume",
+                "betweenness_centrality",
+                "pagerank",
+            ]
+        ].copy()
+        inst_display_df.columns = [
+            "Organization",
+            "Sector",
+            "Cohort Publications",
+            "Partner Organizations",
+            "Joint Papers",
+            "Betweenness Centrality",
+            "PageRank",
+        ]
+        st.dataframe(inst_display_df, use_container_width=True, hide_index=True)
+
+    # Top Collaborating Institutional Pairs
+    inst_pairs: list[dict[str, Any]] = []
+    for u, v, data in coinstr_graph.edges(data=True):
+        w = data.get("weight", 1)
+        inst_pairs.append({"Organization 1": u, "Organization 2": v, "Shared Publications": w})
+
+    if inst_pairs:
+        st.markdown("---")
+        st.subheader("Top Institutional Partnerships")
+        st.caption("Pairs of organizations with the highest number of co-authored publications in this cohort.")
+        top_inst_pairs_df = (
+            pd.DataFrame(inst_pairs)
+            .sort_values(by="Shared Publications", ascending=False)
+            .head(10)
+        )
+        st.dataframe(top_inst_pairs_df, use_container_width=True, hide_index=True)
+
+
+# --- Tab 7: Descriptive Metrics ---------------------------------------------
 
 with tab_desc:
     st.subheader("Descriptive Bibliometric Metrics")
@@ -760,7 +1158,7 @@ with tab_desc:
         st.plotly_chart(fig_top_inst, use_container_width=True)
 
 
-# --- Tab 6: Dataset & Export ------------------------------------------------
+# --- Tab 8: Structured Dataset & Export -------------------------------------
 
 with tab_data:
     st.subheader("Structured Dataset Viewer")

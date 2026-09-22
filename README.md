@@ -5,7 +5,7 @@
 [![FAIR](https://img.shields.io/badge/FAIR-compliant-green.svg)](https://www.go-fair.org/fair-principles/)
 [![DOI](https://zenodo.org/badge/1356203841.svg)](https://doi.org/10.5281/zenodo.22284926)
 
-A formal academic Streamlit dashboard for querying Scopus metadata, retrieving full text via the Elsevier Article Retrieval API (with automatic Scopus abstract fallback on paywalls or missing access), classifying author affiliations (Academia vs. Industry), and analyzing keyword prevalence across institutional structures and time.
+A Streamlit dashboard for querying Scopus metadata, retrieving full text via the Elsevier Article Retrieval API (with automatic Scopus abstract fallback on paywalls or missing access), classifying author affiliations (Academia vs. Industry), and analyzing keyword prevalence across institutional structures and time.
 
 ---
 
@@ -92,7 +92,7 @@ graph TD
 
 ### Setup
 ```bash
-git clone https://github.com/OWNER/scopus-affiliation-analyzer.git
+git clone https://github.com/peiprjs/scopus-affiliation-analyzer.git
 cd scopus-affiliation-analyzer
 
 python -m venv .venv
@@ -146,3 +146,8 @@ CSV exports contain full provenance metadata columns:
 ## License & Citation
 
 Licensed under the [MIT License](LICENSE). Machine-readable citation metadata is provided in [CITATION.cff](CITATION.cff).
+
+---
+
+## AI disclosure
+Google Antigravity was used during the development of this project for rapid prototyping. All AI-generated code was checked by a human for security.

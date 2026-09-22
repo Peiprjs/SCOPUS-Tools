@@ -159,6 +159,51 @@ class TestFulltextClient(unittest.TestCase):
         self.assertEqual(res.loc[0, "text"], "Abstract without full text.")
         self.assertIn("Bypassed", res.loc[0, "text_status_detail"])
 
+    @patch("requests.get")
+    def test_fetch_article_authentication_error_detail(self, mock_get):
+        # 1. XML Error Response
+        mock_xml_resp = MagicMock()
+        mock_xml_resp.status_code = 403
+        mock_xml_resp.headers = {"Content-Type": "text/xml"}
+        mock_xml_resp.text = (
+            "<service-error><status><statusCode>AUTHENTICATION_ERROR</statusCode>"
+            "<statusText>Requestor configuration settings insufficient for access to this resource.</statusText>"
+            "</status></service-error>"
+        )
+        mock_get.return_value = mock_xml_resp
+
+        _, source, detail = fetch_article_text(
+            doi="10.1016/j.cell.2023.01.001",
+            api_key="mock_key",
+            abstract_fallback="Fallback abstract.",
+        )
+        self.assertEqual(source, "Abstract")
+        self.assertIn("Requestor configuration settings insufficient", detail)
+        self.assertIn("403", detail)
+
+        # 2. JSON Error Response
+        mock_json_resp = MagicMock()
+        mock_json_resp.status_code = 403
+        mock_json_resp.headers = {"Content-Type": "application/json"}
+        mock_json_resp.json.return_value = {
+            "service-error": {
+                "status": {
+                    "statusCode": "AUTHENTICATION_ERROR",
+                    "statusText": "Requestor configuration settings insufficient for access to this resource.",
+                }
+            }
+        }
+        mock_get.return_value = mock_json_resp
+
+        _, source, detail = fetch_article_text(
+            doi="10.1016/j.cell.2023.01.001",
+            api_key="mock_key",
+            abstract_fallback="Fallback abstract.",
+        )
+        self.assertEqual(source, "Abstract")
+        self.assertIn("Requestor configuration settings insufficient", detail)
+
 
 if __name__ == "__main__":
     unittest.main()
+

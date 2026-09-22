@@ -236,6 +236,8 @@ if "latex_zip_bytes" in st.session_state and st.session_state["latex_zip_bytes"]
             * `fig_geopolitical_correlation.png`: Geopolitical scope cross-tabulated with institutional sector.
             * `fig_keyword_prevalence.png`: Keyword occurrence frequency across sectors (if keywords specified).
             * `fig_citation_network.png`: Internal cross-citation network map.
+            * `fig_coauthorship_network.png`: Author collaboration network map.
+            * `fig_coinstitution_network.png`: Institutional collaboration network map.
             * `fig_top_authors.png`: Top 20 most frequent authors.
             * `fig_top_institutions.png`: Top 20 most frequent research institutions.
 

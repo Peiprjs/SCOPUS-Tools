@@ -253,6 +253,10 @@ def build_monochrome_figures(
     # 5. Citation Network Map (Monochrome)
     from network_analyzer import (
         build_citation_graph,
+        build_coauthorship_graph,
+        build_coauthorship_plotly_figure,
+        build_coinstitution_graph,
+        build_coinstitution_plotly_figure,
         build_descriptive_frequency_figures,
         build_network_plotly_figure,
     )
@@ -267,7 +271,19 @@ def build_monochrome_figures(
             G_fallback, analyzed_df, monochrome=True
         )
 
-    # 6. Descriptive Frequency Visualizations (Top Authors & Institutions)
+    # 6. Author Collaboration Network (Monochrome)
+    G_coauth, df_coauth = build_coauthorship_graph(analyzed_df)
+    figures["fig_coauthorship_network"] = build_coauthorship_plotly_figure(
+        G_coauth, df_coauth, monochrome=True
+    )
+
+    # 7. Institutional Collaboration Network (Monochrome)
+    G_coinst, df_coinst = build_coinstitution_graph(analyzed_df)
+    figures["fig_coinstitution_network"] = build_coinstitution_plotly_figure(
+        G_coinst, df_coinst, monochrome=True
+    )
+
+    # 8. Descriptive Frequency Visualizations (Top Authors & Institutions)
     fig_authors, fig_insts = build_descriptive_frequency_figures(
         analyzed_df, top_n=20, monochrome=True
     )
@@ -509,6 +525,40 @@ def generate_latex_document(
                     r"",
                 ]
             )
+
+    # Author Collaboration Network
+    if "fig_coauthorship_network" in image_filenames:
+        tex_parts.extend(
+            [
+                r"\newpage",
+                r"\section{Author Collaboration Network Analysis}",
+                r"Undirected co-authorship collaboration network modeling collaborative relationships among researchers in this cohort.",
+                r"",
+                r"\begin{figure}[H]",
+                r"\centering",
+                rf"\includegraphics[width=0.85\linewidth]{{{image_filenames['fig_coauthorship_network']}}}",
+                r"\caption{Author collaboration network graph (Monochrome print view). Node sizes scale with collaborator count; edges indicate joint publications.}",
+                r"\end{figure}",
+                r"",
+            ]
+        )
+
+    # Institutional Collaboration Network
+    if "fig_coinstitution_network" in image_filenames:
+        tex_parts.extend(
+            [
+                r"\newpage",
+                r"\section{Institutional Collaboration Network Analysis}",
+                r"Inter-organizational co-affiliation network illustrating cross-institutional partnerships and cross-sectoral collaborative ties.",
+                r"",
+                r"\begin{figure}[H]",
+                r"\centering",
+                rf"\includegraphics[width=0.85\linewidth]{{{image_filenames['fig_coinstitution_network']}}}",
+                r"\caption{Institutional collaboration network graph (Monochrome print view). Node symbols distinguish institutional sectors (Academia, Industry, Unknown); edge widths indicate joint paper volume.}",
+                r"\end{figure}",
+                r"",
+            ]
+        )
 
     # Descriptive Productivity Metrics
     if "fig_top_authors" in image_filenames or "fig_top_institutions" in image_filenames:

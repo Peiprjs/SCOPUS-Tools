@@ -151,6 +151,25 @@ def fetch_article_text(
         return _fallback("Full Text Payload Incomplete")
 
     if status in (401, 403):
+        error_msg = ""
+        try:
+            content_type = getattr(response, "headers", {}).get("Content-Type", "").lower()
+            resp_text = getattr(response, "text", "") or ""
+            if "json" in content_type:
+                try:
+                    data = response.json()
+                    error_msg = data.get("service-error", {}).get("status", {}).get("statusText") or data.get("message", "")
+                except Exception:
+                    pass
+            elif resp_text:
+                m = re.search(r"<statusText>(.*?)</statusText>", resp_text)
+                if m:
+                    error_msg = m.group(1).strip()
+        except Exception:
+            pass
+
+        if error_msg:
+            return _fallback(f"Elsevier HTTP {status}: {error_msg}")
         return _fallback(f"Paywalled / Unauthorized (HTTP {status})")
 
     if status == 404:

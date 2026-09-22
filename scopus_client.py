@@ -100,6 +100,13 @@ def init_pybliometrics(api_key: str, inst_token: str | None = None) -> None:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as fh:
             config.write(fh)
 
+    try:
+        from pybliometrics.utils.startup import init as pb_init
+        tokens_list = [clean_token] if clean_token else None
+        pb_init(config_path=_CONFIG_PATH, keys=[clean_key], inst_tokens=tokens_list)
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Internal parsing helpers

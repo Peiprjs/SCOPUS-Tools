@@ -35,7 +35,11 @@ pages = {
             title="LaTeX & Print Report",
         ),
     ],
-    "Bibliographic Utilities": [
+    "Batch Operations": [
+        st.Page(
+            "pages/mass_dataset_exporter.py",
+            title="Mass Dataset & Provenance Exporter",
+        ),
         st.Page(
             "pages/batch_ris_downloader.py",
             title="Batch RIS Downloader",
