@@ -33,10 +33,9 @@ A Streamlit dashboard for querying Scopus metadata, retrieving full text via the
 - **Tabbed Analytical Visualizations**:
   - **Affiliation Analysis**: Donut chart of overall distributions and line chart of temporal institutional shares.
   - **Keyword Prevalence**: Grouped bar chart (by affiliation) and temporal dynamics (interactive Heatmap Matrix or Trend Lines).
-  - **Dataset & Provenance Export**: Data viewer with RFC 4180 CSV export embedding complete provenance metadata.
+  - **Dataset & Provenance Export**: Data viewer with CSV export embedding complete provenance metadata.
   - **Methodology & Documentation**: Complete definitions and protocol transparency.
-- **Strict Academic Aesthetic**: Completely devoid of emojis across all UI elements, labels, charts, and metrics.
-
+    
 ---
 ## Architecture & Data Pipeline
 
